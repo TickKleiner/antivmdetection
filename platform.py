@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 
 
@@ -15,16 +16,21 @@ def require_admin():
 
 def check_dependencies(repo_root):
     if os.name == "nt":
-        dependencies = [
-            "VBoxManage.exe",
-            "VolumeId.exe",
-            "DevManView.exe",
-            "computer.lst",
-            "user.lst",
-        ]
+        executable_deps = ["VBoxManage.exe", "VolumeId.exe", "DevManView.exe"]
+        data_files = ["computer.lst", "user.lst"]
+
         missing = [
-            dep for dep in dependencies if not os.path.exists(os.path.join(repo_root, dep))
+            exe
+            for exe in executable_deps
+            if not (
+                os.path.exists(os.path.join(repo_root, exe))
+                or shutil.which(exe) is not None
+            )
         ]
+
+        missing.extend(
+            data for data in data_files if not os.path.exists(os.path.join(repo_root, data))
+        )
     else:
         dependencies = [
             "/usr/bin/cd-drive",

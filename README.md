@@ -32,10 +32,11 @@ The main script will create the following files:
 ### Windows host
 
 * Run `antivmdetect.py` from an elevated prompt (Run as Administrator) so hardware details can be collected.
-* Place the following files in the repository root so dependency checks succeed:
+* Ensure the required Windows tools are available either in the repository root or on your `PATH`:
   * `VBoxManage.exe`
   * `VolumeId.exe`
   * `DevManView.exe`
+* Place the data files in the repository root so the script can read them:
   * `computer.lst`
   * `user.lst`
 
