@@ -41,6 +41,14 @@ class HardwareProvider(ABC):
     def get_chassis_info(self) -> Dict[str, str]:
         raise NotImplementedError
 
+    @abstractmethod
+    def get_processor_info(self) -> Dict[str, str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_oem_strings(self) -> Dict[str, str]:
+        raise NotImplementedError
+
 
 class LinuxDmidecodeProvider(HardwareProvider):
     def __init__(self) -> None:
@@ -254,6 +262,45 @@ class LinuxDmidecodeProvider(HardwareProvider):
 
         return dmi_info
 
+    def get_processor_info(self) -> Dict[str, str]:
+        dmi_info: Dict[str, str] = {
+            'DmiProcVersion': DEFAULT_VALUE,
+            'DmiProcManufacturer': DEFAULT_VALUE,
+        }
+
+        try:
+            for v in self.dmidecode.get_by_type(4):
+                dmi_info['DmiProcVersion'] = _clean_value(
+                    v.get('Version'), remove_spaces=True
+                )
+                dmi_info['DmiProcManufacturer'] = _clean_value(
+                    v.get('Manufacturer'), remove_spaces=True
+                )
+        except Exception:
+            pass
+
+        return dmi_info
+
+    def get_oem_strings(self) -> Dict[str, str]:
+        dmi_info: Dict[str, str] = {
+            'DmiOEMVBoxVer': DEFAULT_VALUE,
+            'DmiOEMVBoxRev': DEFAULT_VALUE,
+        }
+
+        try:
+            for v in self.dmidecode.get_by_type(11):
+                strings = v.get('Strings', {}) if isinstance(v, dict) else {}
+                oem_ver = strings.get('3') or strings.get(3)
+                oem_rev = strings.get('2') or strings.get(2)
+                if oem_ver:
+                    dmi_info['DmiOEMVBoxVer'] = _clean_value(oem_ver)
+                if oem_rev:
+                    dmi_info['DmiOEMVBoxRev'] = _clean_value(oem_rev)
+        except Exception:
+            pass
+
+        return dmi_info
+
 
 class WindowsWmiProvider(HardwareProvider):
     def __init__(self) -> None:
@@ -354,6 +401,44 @@ class WindowsWmiProvider(HardwareProvider):
             dmi_info['DmiChassisSerial'] = _clean_value(serial_randomize(0, len(serial_number)))
         else:
             dmi_info['DmiChassisSerial'] = DEFAULT_VALUE
+
+        return dmi_info
+
+    def get_processor_info(self) -> Dict[str, str]:
+        dmi_info: Dict[str, str] = {
+            'DmiProcVersion': DEFAULT_VALUE,
+            'DmiProcManufacturer': DEFAULT_VALUE,
+        }
+
+        try:
+            processor = self.conn.Win32_Processor()[0]
+            dmi_info['DmiProcVersion'] = _clean_value(
+                getattr(processor, 'Name', None), remove_spaces=True
+            )
+            dmi_info['DmiProcManufacturer'] = _clean_value(
+                getattr(processor, 'Manufacturer', None), remove_spaces=True
+            )
+        except Exception:
+            pass
+
+        return dmi_info
+
+    def get_oem_strings(self) -> Dict[str, str]:
+        dmi_info: Dict[str, str] = {
+            'DmiOEMVBoxVer': DEFAULT_VALUE,
+            'DmiOEMVBoxRev': DEFAULT_VALUE,
+        }
+
+        try:
+            cs = self.conn.Win32_ComputerSystem()[0]
+            oem_strings = getattr(cs, 'OEMStringArray', None) or []
+
+            if len(oem_strings) > 3:
+                dmi_info['DmiOEMVBoxVer'] = _clean_value(oem_strings[3])
+            if len(oem_strings) > 2:
+                dmi_info['DmiOEMVBoxRev'] = _clean_value(oem_strings[2])
+        except Exception:
+            pass
 
         return dmi_info
 

@@ -10,7 +10,6 @@ import netifaces
 import os.path
 import sysconfig
 import importlib.util
-import dmidecode
 import random
 import re
 import time
@@ -44,24 +43,8 @@ dmi_info.update(provider.get_bios_info())
 dmi_info.update(provider.get_board_info())
 dmi_info.update(provider.get_system_info())
 dmi_info.update(provider.get_chassis_info())
-
-for v in dmidecode.get_by_type(4):
-    dmi_info['DmiProcVersion'] = "string:" + v['Version'].replace(" ", "")
-    dmi_info['DmiProcManufacturer'] = "string:" + v['Manufacturer'].replace(" ", "")
-# OEM strings
-
-try:
-    for v in dmidecode.get_by_type(11):
-        oem_ver = v['Strings']['3']
-        oem_rev = v['Strings']['2']
-except:
-    pass
-try:
-    dmi_info['DmiOEMVBoxVer'] = "string:" + oem_ver
-    dmi_info['DmiOEMVBoxRev'] = "string:" + oem_rev
-except:
-    dmi_info['DmiOEMVBoxVer'] = '** No value to retrieve **'
-    dmi_info['DmiOEMVBoxRev'] = '** No value to retrieve **'
+dmi_info.update(provider.get_processor_info())
+dmi_info.update(provider.get_oem_strings())
 
 # Write all data collected so far to file
 name_of_file = dmi_info['DmiSystemProduct'].replace(' ', '').replace('string:', '')
@@ -276,6 +259,34 @@ else:
 
     if len(acpi_list_facp) < 4:
         print('[WARNING] Unable to parse ACPI FACP values from acpidump output. Exiting to avoid writing invalid commands.')
+        sys.exit(1)
+
+    def _validate_field(value, field_name, expected_len, digits_only=False):
+        if len(value) != expected_len:
+            raise ValueError(f"{field_name} length was {len(value)} instead of {expected_len}")
+        if not value.isascii():
+            raise ValueError(f"{field_name} contained non-ASCII characters")
+        if digits_only:
+            if not value.isdigit():
+                raise ValueError(f"{field_name} contained non-digit characters")
+        else:
+            if not re.match(r'^[A-Za-z0-9_]+$', value):
+                raise ValueError(f"{field_name} contained invalid characters")
+        normalized_value = value.upper()
+        return normalized_value
+
+    try:
+        acpi_list_dsdt[1] = _validate_field(acpi_list_dsdt[1], 'ACPI OEM ID', 6)
+        acpi_list_dsdt[2] = _validate_field(acpi_list_dsdt[2], 'ACPI OEM Table ID', 8)
+        acpi_list_dsdt[3] = _validate_field(acpi_list_dsdt[3], 'ACPI OEM Revision', 8, digits_only=True)
+        acpi_list_dsdt[4] = _validate_field(acpi_list_dsdt[4], 'ACPI Creator ID', 4)
+        acpi_list_dsdt[5] = _validate_field(acpi_list_dsdt[5], 'ACPI Creator Revision', 8, digits_only=True)
+
+        acpi_list_facp[1] = _validate_field(acpi_list_facp[1], 'ACPI FACP OEM ID', 6)
+        acpi_list_facp[2] = _validate_field(acpi_list_facp[2], 'ACPI FACP OEM Table ID', 8)
+        acpi_list_facp[3] = _validate_field(acpi_list_facp[3], 'ACPI FACP OEM Revision', 8, digits_only=True)
+    except ValueError as exc:
+        print(f"[WARNING] Invalid ACPI table data detected ({exc}). Exiting to avoid writing invalid commands.")
         sys.exit(1)
 
 # An attempt to solve some of the issues with the AcpiCreatorRev values, I blame the VBox team ..
@@ -493,21 +504,33 @@ logfile.write('}}\r\n')
 logfile.write('if ($version  -like \'10.0*\') {\r\n')
 
 # SDDT .. very beta ..
-new_SDDT1 = subprocess.getoutput("sudo acpidump -s | grep SSDT | grep -o '\(([A-Za-z0-9].*)\)' | head -n 1 | awk {' print $2 '}")
-new_SDDT2 = subprocess.getoutput("sudo acpidump -s | grep SSDT | grep -o '\(([A-Za-z0-9].*)\)' | head -n 1 | awk {' print $3 '}")
-new_SDDT3 = subprocess.getoutput("sudo acpidump -s | grep SSDT | grep -o '\(([A-Za-z0-9].*)\)' | head -n 1 | awk {' print $4 '}")
+new_SDDT1 = None
+new_SDDT2 = None
+new_SDDT3 = None
+
+acpidump_cmd = "sudo acpidump -s"
+acpidump_proc = subprocess.run(acpidump_cmd, shell=True, capture_output=True, text=True)
+
+if acpidump_proc.returncode == 0 and acpidump_proc.stdout:
+    for line in acpidump_proc.stdout.splitlines():
+        if "SSDT" in line:
+            match = re.search(r"\(([A-Za-z0-9]+)\s+([A-Za-z0-9]+)\s+([A-Za-z0-9]+)", line)
+            if match:
+                new_SDDT1, new_SDDT2, new_SDDT3 = match.groups()
+            break
 
 # Check if the key is present.. apparently it is not always the case? Feedback welcome
-logfile.write('$check_exist = (Test-Path HKLM:\HARDWARE\ACPI\SSDT)\r\n')
-logfile.write('if ($check_exist) {\r\n')
-logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\SSDT\VBOX__ -Destination HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + ' -Recurse\r\n')
-logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\SSDT\VBOX__ -Recurse\r\n')
-logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\VBOXCPUT -Destination HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___ -Recurse\r\n')
-logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\VBOXCPUT -Recurse\r\n')
-logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___\\00000002 -Destination HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___\\' + new_SDDT3 + ' -Recurse\r\n')
-logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___\\00000002 -Recurse\r\n')
-logfile.write('}\r\n}\r\n')
-
+if all([new_SDDT1, new_SDDT2, new_SDDT3]):
+    logfile.write('$check_exist = (Test-Path HKLM:\HARDWARE\ACPI\SSDT)\r\n')
+    logfile.write('if ($check_exist) {\r\n')
+    logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\SSDT\VBOX__ -Destination HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + ' -Recurse\r\n')
+    logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\SSDT\VBOX__ -Recurse\r\n')
+    logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\VBOXCPUT -Destination HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___ -Recurse\r\n')
+    logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\VBOXCPUT -Recurse\r\n')
+    logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___\\00000002 -Destination HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___\\' + new_SDDT3 + ' -Recurse\r\n')
+    logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\SSDT\\' + new_SDDT1 + '\\' + new_SDDT2 + '___\\00000002 -Recurse\r\n')
+    logfile.write('}\r\n')
+logfile.write('}\r\n')
 # SystemBiosVersion - TODO: get real values
 logfile.write('New-ItemProperty -Path HKLM:\HARDWARE\DESCRIPTION\System -Name SystemBiosVersion -Value "'+ acpi_list_dsdt[1] + ' - ' + acpi_list_dsdt[0] + '" -PropertyType "String" -force\r\n')
 
