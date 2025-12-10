@@ -17,7 +17,7 @@ import time
 import base64
 import sys
 import struct
-import platform as platform_helper
+import platform_helper
 import uuid
 
 stdlib_platform_spec = importlib.util.find_spec(
