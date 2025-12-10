@@ -270,6 +270,14 @@ else:
     acpi_list_facp = acpi_facp.split(' ')
     acpi_list_facp = list(filter(None, acpi_list_facp))
 
+    if len(acpi_list_dsdt) < 6:
+        print('[WARNING] Unable to parse ACPI DSDT values from acpidump output. Exiting to avoid writing invalid commands.')
+        sys.exit(1)
+
+    if len(acpi_list_facp) < 4:
+        print('[WARNING] Unable to parse ACPI FACP values from acpidump output. Exiting to avoid writing invalid commands.')
+        sys.exit(1)
+
 # An attempt to solve some of the issues with the AcpiCreatorRev values, I blame the VBox team ..
 if isinstance(acpi_list_dsdt[5],str):
  acpi_list_dsdt[5] = re.sub("[^0-9]", "", acpi_list_dsdt[5])
