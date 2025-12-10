@@ -8,6 +8,8 @@
 import subprocess
 import netifaces
 import os.path
+import sysconfig
+import importlib.util
 import dmidecode
 import random
 import re
@@ -17,6 +19,12 @@ import sys
 import struct
 import platform as platform_helper
 import uuid
+
+stdlib_platform_spec = importlib.util.find_spec(
+    "platform", [sysconfig.get_path("stdlib")]
+)
+stdlib_platform = importlib.util.module_from_spec(stdlib_platform_spec)
+stdlib_platform_spec.loader.exec_module(stdlib_platform)
 
 from providers.hardware import get_hardware_provider, serial_randomize
 from providers.storage import get_cdrom_metadata, get_disk_metadata
@@ -97,7 +105,7 @@ disk_name = subprocess.getoutput("df -P / | tail -n 1 | awk '/.*/ { print $1 }'"
 if '/cow' in disk_name:
  disk_name = "/dev/sdb"
 
-if not platform.system().lower().startswith('win'):
+if not stdlib_platform.system().lower().startswith('win'):
     try:
         if os.path.exists(disk_name):
             disk_serial = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Serial Number:  [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
@@ -162,7 +170,7 @@ logfile.write('fi\n')
 
 # CD-ROM information
 cdrom_dmi = get_cdrom_metadata(serial_randomize)
-if os.path.islink('/dev/cdrom') and not platform.system().lower().startswith('win'):
+if os.path.islink('/dev/cdrom') and not stdlib_platform.system().lower().startswith('win'):
     # CD-ROM serial - No access to a computer with a CD-ROM to verify a switch to smartcrl, at the moment.
     cdrom_serial = subprocess.getoutput("hdparm -i /dev/cdrom | grep -o 'SerialNo=[A-Za-z0-9_\+\/ .\"-]*' | awk -F= '{print $2}'")
     if cdrom_serial:
