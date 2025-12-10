@@ -1,1 +1,2 @@
 py-dmidecode==0.0.2
+wmi==1.5.1

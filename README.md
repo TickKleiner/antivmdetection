@@ -29,6 +29,16 @@ The main script will create the following files:
 * Make generated host script executable from current user `sudo chmod a+x xxxxx.sh`
 * If you do get the following message: "ACPI tables bigger than 64KB (VERR_TOO_MUCH_DATA)", this is due to a limitation in Virtualbox, for more context see this case: <https://github.com/nsmfoo/antivmdetection/issues/37> . Not verified to work, but <https://www.tonymacx86.com/dsdt-database> might a good resource...
 
+### Windows host
+
+* Run `antivmdetect.py` from an elevated prompt (Run as Administrator) so hardware details can be collected.
+* Place the following files in the repository root so dependency checks succeed:
+  * `VBoxManage.exe`
+  * `VolumeId.exe`
+  * `DevManView.exe`
+  * `computer.lst`
+  * `user.lst`
+
 ## Setup VM
 
 * Create the VM but don't start it, also exit the VirtualBox GUI. The shell script needs to be run before installation!.

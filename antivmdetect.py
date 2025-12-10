@@ -10,166 +10,32 @@ import netifaces
 import os.path
 import dmidecode
 import random
-import uuid
 import re
 import time
 import base64
 import sys
+import struct
+import platform as platform_helper
+import uuid
+
+from providers.hardware import get_hardware_provider, serial_randomize
+from providers.storage import get_cdrom_metadata, get_disk_metadata
 
 # Welcome
 print('--- Generate VirtualBox templates to help thwart VM detection and more .. - Mikael, @nsmfoo ---')
 
-if not os.geteuid()==0:
-    sys.exit("\n[*] You need to run this script as root\n")
-
-# Check dependencies
-dependencies = ["/usr/bin/cd-drive", "/usr/bin/acpidump", "DevManView.exe", "Volumeid.exe", "computer.lst", "user.lst", "/usr/bin/glxinfo", "/usr/sbin/smartctl"]
-for dep in dependencies:
-    if not (os.path.exists(dep)):
-      print('[WARNING] Dependencies are missing, please verify that you have installed: ', dep)
-      exit()
+script_root = os.path.dirname(os.path.abspath(__file__))
+platform_helper.require_admin()
+platform_helper.check_dependencies(script_root)
 
 print('[*] Creating VirtualBox modifications ..')
 
-# Randomize serial
-def serial_randomize(start=0, string_length=10):
-    rand = str(uuid.uuid4())
-    rand = rand.upper()
-    rand = re.sub('-', '', rand)
-    return rand[start:string_length]
-
 dmi_info = {}
-
-try:
-   for v in dmidecode.get_by_type(0):
-     if type(v) == dict and v['DMIType'] == 0:
-        dmi_info['DmiBIOSVendor'] =  "string:" + v['Vendor']
-        dmi_info['DmiBIOSVersion'] =  "string:" + v['Version'].replace(" ", "")
-        biosversion = v['BIOS Revision']
-        dmi_info['DmiBIOSReleaseDate'] =  "string:" + v['Release Date']
-except:
-   # This typo is deliberate, as a previous version of py-dmidecode contained a typo 
-   dmi_info['DmiBIOSReleaseDate'] =  "string:" + v['Relase Date']
-
-try:
-    dmi_info['DmiBIOSReleaseMajor'], dmi_info['DmiBIOSReleaseMinor'] = biosversion.split('.', 1)
-except:
-    dmi_info['DmiBIOSReleaseMajor'] = '** No value to retrieve **'
-    dmi_info['DmiBIOSReleaseMinor'] = '** No value to retrieve **'
-
-# python-dmidecode does not currently reveal all values .. this is plan B
-dmi_firmware = subprocess.getoutput("dmidecode t0")
-try:
-    dmi_info['DmiBIOSFirmwareMajor'], dmi_info['DmiBIOSFirmwareMinor'] = re.search(
-        "Firmware Revision: ([0-9A-Za-z. ]*)", dmi_firmware).group(1).split('.', 1)
-except:
-    dmi_info['DmiBIOSFirmwareMajor'] = '** No value to retrieve **'
-    dmi_info['DmiBIOSFirmwareMinor'] = '** No value to retrieve **'
-
-for v in dmidecode.get_by_type(2):
-    if type(v) == dict and v['DMIType'] == 2:
-        serial_number = v['Serial Number']
-        dmi_info['DmiBoardVersion'] =  "string:" + v['Version'].replace(" ", "")
-        dmi_info['DmiBoardProduct'] = "string:" + v['Product Name'].replace(" ", "")
-        dmi_info['DmiBoardVendor'] =  "string:" + v['Manufacturer'].replace(" ", "")
-
-# This is hopefully not the best solution ..
-try:
-    s_number = []
-    if serial_number:
-        # Get position
-        if '/' in serial_number:
-            for slash in re.finditer('/', serial_number):
-                s_number.append(slash.start(0))
-                # Remove / from string
-                new_serial = re.sub('/', '', serial_number)
-                new_serial = serial_randomize(0, len(new_serial))
-            # Add / again
-            for char in s_number:
-                new_serial = new_serial[:char] + '/' + new_serial[char:]
-        else:
-            new_serial = serial_randomize(0, len(serial_number))
-    else:
-        new_serial = "** No value to retrieve **"
-except:
-    new_serial = "** No value to retrieve **"
-
-dmi_info['DmiBoardSerial'] = new_serial
-
-# python-dmidecode does not reveal all values .. this is plan B
-dmi_board = subprocess.getoutput("dmidecode -t2")
-try:
-    asset_tag = re.search("Asset Tag: ([0-9A-Za-z ]*)", dmi_board).group(1)
-except:
-    asset_tag = '** No value to retrieve **'
-
-dmi_info['DmiBoardAssetTag'] =  "string:" + asset_tag
-
-try:
-    loc_chassis = re.search("Location In Chassis: ([0-9A-Za-z ]*)", dmi_board).group(1)
-except:
-    loc_chassis = '** No value to retrieve **'
-
-dmi_info['DmiBoardLocInChass'] = "string:" + loc_chassis.replace(" ", "")
-
-# Based on the list from https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.4.0.pdf
-board_dict = {'Unknown': 1, 'Other': 2, 'Server Blade': 3, 'Connectivity Switch': 4, 'System Management Module': 5,
-              'Processor Module': 6, 'I/O Module': 7, 'Memory Module': 8, 'Daughter board': 9, 'Motherboard': 10,
-              'Processor/Memory Module': 11, 'Processor/IO Module': 12, 'Interconnect board': 13}
-try:
-    board_type = re.search("Type: ([0-9A-Za-z ]+)", dmi_board).group(1)
-    board_type = str(board_dict.get(board_type))
-except:
-    board_type = '** No value to retrieve **'
-
-dmi_info['DmiBoardBoardType'] = board_type
-
-for v in dmidecode.get_by_type(1):
-    if type(v) == dict and v['DMIType'] == 1:
-        dmi_info['DmiSystemSKU'] = v['SKU Number']
-        system_family = v['Family']
-        system_serial = v['Serial Number']
-        dmi_info['DmiSystemVersion'] = "string:" + v['Version'].replace(" ", "")
-        dmi_info['DmiSystemProduct'] = "string:" + v['Product Name'].replace(" ", "")
-        dmi_info['DmiSystemVendor'] = "string:" + v['Manufacturer'].replace(" ", "")
-
-if not system_family:
-    dmi_info['DmiSystemFamily'] = "Not Specified"
-else:
-    dmi_info['DmiSystemFamily'] = "string:" + system_family
-
-# Create a new UUID
-newuuid = str(uuid.uuid4())
-dmi_info['DmiSystemUuid'] = newuuid.upper()
-# Create a new system serial number
-dmi_info['DmiSystemSerial'] = "string:" + (serial_randomize(0, len(system_serial)))
-
-for v in dmidecode.get_by_type(3):
-    dmi_info['DmiChassisVendor'] = "string:" + v['Manufacturer'].replace(" ", "")
-    chassi_serial = v['Serial Number']
-    dmi_info['DmiChassisVersion'] = "string:" + v['Version'].replace(" ", "")
-    dmi_info['DmiChassisType'] = v['Type']
-
-# Based on the list from https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.4.0.pdf
-chassi_dict = {'Other': 1, 'Unknown': 2, 'Desktop': 3, 'Low Profile Desktop': 4, 'Pizza Box': 5, 'Mini Tower': 6,
-               'Tower': 7, 'Portable': 8, 'Laptop': 9, 'Notebook': 10, 'Hand Held': 11, 'Docking Station': 12,
-               'All in One': 13, 'Sub Notebook': 14, 'Space-saving': 15, 'Lunch Box': 16, 'Main Server Chassis': 17,
-               'Expansion Chassis': 18, 'SubChassis': 19, 'Bus Expansion Chassis': 20, 'Peripheral Chassis': 21, 'RAID Chassis': 22,
-               'Rack Mount Chassis': 23, 'Sealed-case PC': 24, 'Multi-system chassis': 25, 'Compact PCI': 26, 'Advanced TCA': 27,
-               'Blade': 28, 'Blade Enclosure': 29, 'Tablet': 30, 'Convertible': 31, 'Detachable': 32, 'IoT Gateway': 33,
-               'Embedded PC': 34, 'Mini PC': 35, 'Stick PC': 36}
-
-dmi_info['DmiChassisType'] = str(chassi_dict.get(dmi_info['DmiChassisType']))
-
-# python-dmidecode does not reveal all values .. this is plan B
-chassi = subprocess.getoutput("dmidecode -t3")
-try:
-    dmi_info['DmiChassisAssetTag'] = "string:" + re.search("Asset Tag: ([0-9A-Za-z ]*)", chassi).group(1)
-except:
-    dmi_info['DmiChassisAssetTag'] = '** No value to retrieve **'
-
-# Create a new chassi serial number
-dmi_info['DmiChassisSerial'] = "string:" + (serial_randomize(0, len(chassi_serial)))
+provider = get_hardware_provider()
+dmi_info.update(provider.get_bios_info())
+dmi_info.update(provider.get_board_info())
+dmi_info.update(provider.get_system_info())
+dmi_info.update(provider.get_chassis_info())
 
 for v in dmidecode.get_by_type(4):
     dmi_info['DmiProcVersion'] = "string:" + v['Version'].replace(" ", "")
@@ -207,84 +73,96 @@ bash = """ if [ $# -eq 0 ]
 fi """
 logfile.write(bash + '\n')
 
+# Collect VBoxManage commands for a Windows host helper script
+windows_pcbios_cmds = []
+windows_disk_ide_cmds = []
+windows_disk_ahci_cmds = []
+windows_cdrom_ide_cmds = []
+windows_cdrom_ahci_cmds = []
+windows_acpi_cmds = []
+windows_cpuid_cmds = []
+windows_mac_cmd = ''
+
 for k, v in sorted(dmi_info.items()):
     if '** No value to retrieve **' in v:
-        logfile.write('# VBoxManage setextradata "$1" VBoxInternal/Devices/pcbios/0/Config/' + k + '\t' + v + '\n')
+        logfile.write('# VBoxManage setextradata "$1" "VBoxInternal/Devices/pcbios/0/Config/' + k + '"\t"' + v + '"\n')
     else:
         logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/pcbios/0/Config/' + k + '\t\'' + v + '\'\n')
+        windows_pcbios_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/pcbios/0/Config/' + k + '" "' + v + '"')
 # Disk information
-disk_dmi = {}
+disk_dmi = get_disk_metadata(serial_randomize)
 disk_name = subprocess.getoutput("df -P / | tail -n 1 | awk '/.*/ { print $1 }'")
 
-# Handle Ubuntu live-cd 
+# Handle Ubuntu live-cd
 if '/cow' in disk_name:
  disk_name = "/dev/sdb"
 
-# Disk serial
-try:
-    if os.path.exists(disk_name):
-        disk_serial = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Serial Number:  [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
-        if 'SG_IO' in disk_serial:
-          print('[WARNING] Unable to acquire the disk serial number! Will add one, but please try to run this script on another machine instead..')
-          disk_serial = 'HUA721010KLA330'
+if not platform.system().lower().startswith('win'):
+    try:
+        if os.path.exists(disk_name):
+            disk_serial = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Serial Number:  [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
+            if 'SG_IO' in disk_serial:
+              print('[WARNING] Unable to acquire the disk serial number! Will add one, but please try to run this script on another machine instead..')
+              disk_serial = 'HUA721010KLA330'
 
-        disk_dmi['SerialNumber'] = (serial_randomize(0, len(disk_serial)))
+            disk_dmi['SerialNumber'] = (serial_randomize(0, len(disk_serial)))
 
-        if (len(disk_dmi['SerialNumber']) > 20):
-            disk_dmi['SerialNumber'] = disk_dmi['SerialNumber'][:20]
-except OSError:
-    print('Error reading system disk..')
+            if (len(disk_dmi['SerialNumber']) > 20):
+                disk_dmi['SerialNumber'] = disk_dmi['SerialNumber'][:20]
+    except OSError:
+        print('Error reading system disk..')
 
-# Disk firmware rev
-try:
-    if os.path.exists(disk_name):
-       disk_fwrev = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Firmware Version: [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
-       disk_dmi['FirmwareRevision'] = disk_fwrev    
-       if 'SG_IO' in disk_dmi['FirmwareRevision']:
-         print('[WARNING] Unable to acquire the disk firmware revision! Will add one, but please try to run this script on another machine instead..')
-         disk_dmi['FirmwareRevision'] = 'LMP07L3Q'
-         disk_dmi['FirmwareRevision'] = (serial_randomize(0, len(disk_dmi['FirmwareRevision'])))
-except OSError:
-    print('Error reading system disk..')
+    try:
+        if os.path.exists(disk_name):
+           disk_fwrev = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Firmware Version: [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
+           disk_dmi['FirmwareRevision'] = disk_fwrev
+           if 'SG_IO' in disk_dmi['FirmwareRevision']:
+             print('[WARNING] Unable to acquire the disk firmware revision! Will add one, but please try to run this script on another machine instead..')
+             disk_dmi['FirmwareRevision'] = 'LMP07L3Q'
+             disk_dmi['FirmwareRevision'] = (serial_randomize(0, len(disk_dmi['FirmwareRevision'])))
+    except OSError:
+        print('Error reading system disk..')
 
-# Disk model number
-try:
-    if os.path.exists(disk_name):
-        disk_modelno = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Model Family: [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
-        disk_dmi['ModelNumber'] = disk_modelno
+    try:
+        if os.path.exists(disk_name):
+            disk_modelno = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Model Family: [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
+            disk_dmi['ModelNumber'] = disk_modelno
 
-        if 'SG_IO' in disk_dmi['ModelNumber']:
-          print('[WARNING] Unable to acquire the disk model number! Will add one, but please try to run this script on another machine instead..')
-          disk_vendor = 'SAMSUNG'
-          disk_vendor_part1 = 'F8E36628D278'
-          disk_vendor_part1 = (serial_randomize(0, len(disk_vendor_part1)))
-          disk_vendor_part2 = '611D3'
-          disk_vendor_part2 = (serial_randomize(0, len(disk_vendor_part2)))
-          disk_dmi['ModelNumber'] = (serial_randomize(0, len(disk_dmi['ModelNumber'])))
-          disk_dmi['ModelNumber'] = disk_vendor + ' ' + disk_vendor_part1 + '-' + disk_vendor_part2
-except OSError:
-     print('Error reading system disk..')
+            if 'SG_IO' in disk_dmi['ModelNumber']:
+              print('[WARNING] Unable to acquire the disk model number! Will add one, but please try to run this script on another machine instead..')
+              disk_vendor = 'SAMSUNG'
+              disk_vendor_part1 = 'F8E36628D278'
+              disk_vendor_part1 = (serial_randomize(0, len(disk_vendor_part1)))
+              disk_vendor_part2 = '611D3'
+              disk_vendor_part2 = (serial_randomize(0, len(disk_vendor_part2)))
+              disk_dmi['ModelNumber'] = (serial_randomize(0, len(disk_dmi['ModelNumber'])))
+              disk_dmi['ModelNumber'] = disk_vendor + ' ' + disk_vendor_part1 + '-' + disk_vendor_part2
+              disk_dmi['VendorId'] = disk_vendor
+    except OSError:
+         print('Error reading system disk..')
 
-logfile.write('controller=`VBoxManage showvminfo "$1" --machinereadable | grep SATA`\n')
+logfile.write('controller=$(VBoxManage showvminfo "$1" --machinereadable | tr -d \"\r\" | grep -i SATA)\n')
 
 logfile.write('if [[ -z "$controller" ]]; then\n')
 for k, v in disk_dmi.items():
     if '** No value to retrieve **' in v:
-        logfile.write('# VBoxManage setextradata "$1" VBoxInternal/Devices/piix3ide/0/Config/PrimaryMaster/' + k + '\t' + v + '\n')
+        logfile.write('# VBoxManage setextradata "$1" "VBoxInternal/Devices/piix3ide/0/Config/PrimaryMaster/' + k + '"\t"' + v + '"\n')
     else:
         logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/piix3ide/0/Config/PrimaryMaster/' + k + '\t\'' + v + '\'\n')
+        windows_disk_ide_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/piix3ide/0/Config/PrimaryMaster/' + k + '" "' + v + '"')
 
 logfile.write('else\n')
 for k, v in disk_dmi.items():
     if '** No value to retrieve **' in v:
-        logfile.write('# VBoxManage setextradata "$1" VBoxInternal/Devices/ahci/0/Config/Port0/' + k + '\t' + v + '\n')
+        logfile.write('# VBoxManage setextradata "$1" "VBoxInternal/Devices/ahci/0/Config/Port0/' + k + '"\t"' + v + '"\n')
     else:
         logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/ahci/0/Config/Port0/' + k + '\t\'' + v + '\'\n')
+        windows_disk_ahci_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/ahci/0/Config/Port0/' + k + '" "' + v + '"')
 logfile.write('fi\n')
 
 # CD-ROM information
-cdrom_dmi = {}
-if os.path.islink('/dev/cdrom'):
+cdrom_dmi = get_cdrom_metadata(serial_randomize)
+if os.path.islink('/dev/cdrom') and not platform.system().lower().startswith('win'):
     # CD-ROM serial - No access to a computer with a CD-ROM to verify a switch to smartcrl, at the moment.
     cdrom_serial = subprocess.getoutput("hdparm -i /dev/cdrom | grep -o 'SerialNo=[A-Za-z0-9_\+\/ .\"-]*' | awk -F= '{print $2}'")
     if cdrom_serial:
@@ -303,7 +181,7 @@ if os.path.islink('/dev/cdrom'):
     # CD-ROM Vendor
     cdrom_vendor = subprocess.getoutput("cd-drive | grep Vendor | grep  ':' | awk {' print $3 '}")
     cdrom_dmi['ATAPIVendorId'] = cdrom_vendor
-else:
+elif not os.path.islink('/dev/cdrom'):
     logfile.write('# No CD-ROM detected: ** No values to retrieve **\n')
 
 # And some more
@@ -313,17 +191,19 @@ if os.path.islink('/dev/cdrom'):
 
  for k, v in cdrom_dmi.items():
      if '** No value to retrieve **' in v:
-        logfile.write('# VBoxManage setextradata "$1" VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/' + k + '\t' + v + '\n')
+        logfile.write('# VBoxManage setextradata "$1" "VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/' + k + '"\t"' + v + '"\n')
      else:
         logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/' + k + '\t\'' + v + '\'\n')
+        windows_cdrom_ide_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/' + k + '" "' + v + '"')
 
  logfile.write('else\n')
 
  for k, v in cdrom_dmi.items():
      if '** No value to retrieve **' in v:
-        logfile.write('# VBoxManage setextradata "$1" VBoxInternal/Devices/ahci/0/Config/Port1/' + k + '\t' + v + '\n')
+        logfile.write('# VBoxManage setextradata "$1" "VBoxInternal/Devices/ahci/0/Config/Port1/' + k + '"\t"' + v + '"\n')
      else:
         logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/ahci/0/Config/Port1/' + k + '\t\'' + v + '\'\n')
+        windows_cdrom_ahci_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/ahci/0/Config/Port1/' + k + '" "' + v + '"')
  logfile.write('fi\n')
 
 # Get and write DSDT image to file
@@ -335,15 +215,38 @@ if name_of_dsdt:
 else:
     dsdt_name = 'DSDT_' + dmi_info['DmiChassisType'] + '_' + dmi_info['DmiBoardProduct'].replace("string:", "") + '.bin'
     os.system("dd if=/sys/firmware/acpi/tables/DSDT of=" + dsdt_name + " >/dev/null 2>&1")
-   
+
 try:
-    if os.path.isfile(dsdt_name): 
-     logfile.write('if [ ! -f "' + dsdt_name + '" ]; then echo "[WARNING] Unable to find the DSDT file!"; fi\t\n')   
-     logfile.write('VBoxManage setextradata "$1" "VBoxInternal/Devices/acpi/0/Config/CustomTable"\t "$PWD"/' + dsdt_name + '\n')   
-     print('[*] Finished: A DSDT dump has been created named:', dsdt_name)  
+    if os.path.isfile(dsdt_name):
+        logfile.write('if [ ! -f "' + dsdt_name + '" ]; then echo "[WARNING] Unable to find the DSDT file!"; fi\t\n')
+        logfile.write('VBoxManage setextradata "$1" "VBoxInternal/Devices/acpi/0/Config/CustomTable"\t "$PWD"/' + dsdt_name + '\n')
+        windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/CustomTable" "$dsdtPath"')
+
+        windows_dsdt_export = os.path.splitext(dsdt_name)[0] + '_export.ps1'
+        with open(windows_dsdt_export, 'w+', newline='') as dsdt_script:
+            dsdt_script.write('Add-Type -TypeDefinition "' +
+                              '[DllImport(\\\"kernel32.dll\\\", SetLastError=true)] public static extern uint GetSystemFirmwareTable(uint FirmwareTableProviderSignature, uint FirmwareTableID, System.IntPtr pFirmwareTableBuffer, uint BufferSize);" -Name NativeMethods -Namespace Firmware\r\n')
+            dsdt_script.write('$signature = [BitConverter]::ToUInt32([Text.Encoding]::ASCII.GetBytes(\'ACPI\'),0)\r\n')
+            dsdt_script.write('$tableId = [BitConverter]::ToUInt32([Text.Encoding]::ASCII.GetBytes(\'DSDT\'),0)\r\n')
+            dsdt_script.write('$bufferSize = [Firmware.NativeMethods]::GetSystemFirmwareTable($signature, $tableId, [IntPtr]::Zero, 0)\r\n')
+            dsdt_script.write('if ($bufferSize -eq 0) { throw \"Unable to query firmware table size\" }\r\n')
+            dsdt_script.write('$buffer = New-Object byte[] $bufferSize\r\n')
+            dsdt_script.write('$ptr = [Runtime.InteropServices.Marshal]::AllocHGlobal([int]$bufferSize)\r\n')
+            dsdt_script.write('try {\r\n')
+            dsdt_script.write('  $written = [Firmware.NativeMethods]::GetSystemFirmwareTable($signature, $tableId, $ptr, $bufferSize)\r\n')
+            dsdt_script.write('  if ($written -eq 0) { throw \"Unable to query firmware table bytes\" }\r\n')
+            dsdt_script.write('  [Runtime.InteropServices.Marshal]::Copy($ptr, $buffer, 0, [int]$bufferSize)\r\n')
+            dsdt_script.write('  $target = Join-Path $PSScriptRoot \'' + dsdt_name + '\'\r\n')
+            dsdt_script.write('  [IO.File]::WriteAllBytes($target, $buffer)\r\n')
+            dsdt_script.write('  Write-Host \"DSDT saved to $target\"\r\n')
+            dsdt_script.write('} finally {\r\n')
+            dsdt_script.write('  [Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)\r\n')
+            dsdt_script.write('}\r\n')
+
+        print('[*] Finished: A DSDT dump has been created named:', dsdt_name)
 except:
-     print('[WARNING] Unable to create the DSDT dump')
-     pass
+    print('[WARNING] Unable to create the DSDT dump')
+    pass
 
 acpi_dsdt = subprocess.getoutput('acpidump -s | grep DSDT | grep -o "\(([A-Za-z0-9].*)\)" | tr -d "()"')
 acpi_facp = subprocess.getoutput('acpidump -s | grep FACP | grep -o "\(([A-Za-z0-9].*)\)" | tr -d "()"')
@@ -366,6 +269,9 @@ if isinstance(acpi_list_dsdt[5],str):
 logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiOemId\t\'' + acpi_list_dsdt[1] + '\'\n')
 logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId\t\'' + acpi_list_dsdt[4] + '\'\n')
 logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev\t\'' + acpi_list_dsdt[5] + '\'\n')
+windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiOemId" "' + acpi_list_dsdt[1] + '"')
+windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId" "' + acpi_list_dsdt[4] + '"')
+windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev" "' + acpi_list_dsdt[5] + '"')
 
 # Randomize MAC address, based on the host interface MAC
 find_int = netifaces.gateways()['default'][netifaces.AF_INET][1]
@@ -387,6 +293,7 @@ while match is None:
     match = pattern.match(le_big_mac)
 
 logfile.write('VBoxManage modifyvm "$1" --macaddress1\t' + le_big_mac + '\n')
+windows_mac_cmd = 'VBoxManage.exe modifyvm "$vmName" --macaddress1 ' + le_big_mac
 
 # Copy and set the CPU brand string
 cpu_brand = subprocess.getoutput("cat /proc/cpuinfo | grep -m 1 'model name' | cut -d  ':' -f2 | sed 's/^ *//'")
@@ -397,14 +304,19 @@ if len(cpu_brand) < 47:
 eax_values=('80000002', '80000003', '80000004')
 registers=('eax', 'ebx', 'ecx', 'edx')
 
+def cpuid_chunk_hex(brand_chunk):
+    padded = brand_chunk.encode('utf-8').ljust(4, b'\x00')
+    return format(struct.unpack('<I', padded)[0], '08x')
+
 i=4
 while i<=47:
     for e in eax_values:
       for r in registers:
          k=i-4
          if len(cpu_brand[k:i]):
-          rebrand = subprocess.getoutput("echo -n '" + cpu_brand[k:i] + "' |od -A n -t x4 | sed 's/ //'")
+          rebrand = cpuid_chunk_hex(cpu_brand[k:i])
           logfile.write('VBoxManage setextradata "$1" VBoxInternal/CPUM/HostCPUID/' + e + '/' + r + '  0x' +rebrand + '\t\n')
+          windows_cpuid_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/CPUM/HostCPUID/' + e + '/' + r + '  0x' + rebrand + '"')
          i=i+4
 
 # Check the numbers of CPUs, should be 2 or more
@@ -433,6 +345,44 @@ arc_devman = subprocess.getoutput("file -b DevManView.exe | grep -o '80386\|64' 
 logfile.write('arc_devman=' + arc_devman + '\t\n')
 logfile.write('devman_arc=$(VBoxManage showvminfo --machinereadable "$1" | grep ostype | cut -d "=" -f2 | grep -o "(.*)" | sed \'s/(//;s/)//;s/-bit//\')\t\n')
 logfile.write('if [ $devman_arc != $arc_devman ]; then echo "[WARNING] Please use the DevManView version that coresponds to the guest architecture: $devman_arc "; fi\t\n')
+
+# Windows host helper script
+windows_host_name = file_name.replace('.sh', '_host.ps1')
+with open(windows_host_name, 'w+', newline='') as windows_host:
+    windows_host.write('# PowerShell helper to mirror VBoxManage setextradata entries\r\n')
+    windows_host.write('$vmName = $args[0]\r\n')
+    windows_host.write('if (-not $vmName) { Write-Host "[*] Please add vm name!"; exit 1 }\r\n')
+    windows_host.write('$vmInfo = VBoxManage.exe showvminfo $vmName --machinereadable\r\n')
+    windows_host.write('if ($LASTEXITCODE -ne 0) { throw "Unable to read VM info for $vmName" }\r\n')
+    windows_host.write('$hasSata = $vmInfo -match "SATA"\r\n')
+    windows_host.write('$dsdtPath = Join-Path $PSScriptRoot "' + dsdt_name + '"\r\n')
+    windows_host.write('if (-not (Test-Path $dsdtPath)) { Write-Warning "Unable to find the DSDT file at $dsdtPath" }\r\n')
+    for cmd in windows_pcbios_cmds:
+        windows_host.write(cmd + '\r\n')
+    for cmd in windows_acpi_cmds:
+        windows_host.write(cmd + '\r\n')
+    windows_host.write('if (-not $hasSata) {\r\n')
+    for cmd in windows_disk_ide_cmds:
+        windows_host.write('  ' + cmd + '\r\n')
+    windows_host.write('} else {\r\n')
+    for cmd in windows_disk_ahci_cmds:
+        windows_host.write('  ' + cmd + '\r\n')
+    windows_host.write('}\r\n')
+    if cdrom_dmi:
+        windows_host.write('if (Test-Path \'$env:SystemDrive\\\\Windows\\\\system32\\\\drivers\\\\cdrom.sys\') {\r\n')
+        windows_host.write('  if (-not $hasSata) {\r\n')
+        for cmd in windows_cdrom_ide_cmds:
+            windows_host.write('    ' + cmd + '\r\n')
+        windows_host.write('  } else {\r\n')
+        for cmd in windows_cdrom_ahci_cmds:
+            windows_host.write('    ' + cmd + '\r\n')
+        windows_host.write('  }\r\n')
+        windows_host.write('}\r\n')
+    for cmd in windows_cpuid_cmds:
+        windows_host.write(cmd + '\r\n')
+    if windows_mac_cmd:
+        windows_host.write(windows_mac_cmd + '\r\n')
+    windows_host.write('Write-Host "[*] Finished configuring setextradata for $vmName"\r\n')
 
 # Done!
 logfile.close()
@@ -517,7 +467,7 @@ logfile.write('}else{\r\n')
 logfile.write('$check_exist = (Test-Path HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '___\\00000001)\r\n')
 logfile.write('if ($check_exist) {\r\n')
 logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '___\\00000001 -Destination HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '___\\' + acpi_list_dsdt[3] + ' -Recurse\r\n')
-logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '___\\00000001 -Recurse\r\n')    
+logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '___\\00000001 -Recurse\r\n')
 logfile.write('}else{\r\n')
 logfile.write('Copy-Item -Path HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '\\00000001 -Destination HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '\\' + acpi_list_dsdt[3] + ' -Recurse\r\n')
 logfile.write('Remove-Item -Path HKLM:\HARDWARE\ACPI\RSDT\\' + manu + '\\' + acpi_list_dsdt[2] + '\\00000001 -Recurse\r\n')
@@ -839,7 +789,7 @@ function GenFiles([string]$status) {\r\n
  $TimeStamp = RandomDate\r\n
  $ext = Get-Random -input ".pdf",".txt",".docx",".doc",".xls", ".xlsx",".zip",".png",".jpg", ".jpeg", ".gif", ".bmp", ".html", ".htm", ".ppt", ".pptx"\r\n
  $namely = Get-Random -InputObject (get-content computer.lst)\r\n
- 
+
  if ($version -notlike '10.0*') {\r\n
   $location = Get-Random -input "$ENV:userprofile\Desktop\\", "$ENV:userprofile\Documents\\", "$ENV:homedrive\\", "$ENV:userprofile\Downloads\\", "$ENV:userprofile\Pictures\\"\r\n
  } else {\r\n
@@ -847,7 +797,7 @@ function GenFiles([string]$status) {\r\n
  }\r\n
  $length = Get-Random -minimum 300 -maximum 4534350\r\n
  $buffer = New-Object Byte[] $length\r\n
- 
+
  New-Item $location$namely$ext -type file -value $buffer\r\n
  Get-ChildItem $location$namely$ext | % {$_.CreationTime = ((get-date).AddDays(-$TimeStamp[0]).AddHours(-$TimeStamp[1]).AddMinutes(-$TimeStamp[2]).AddSeconds(-$TimeStamp[3])) }\r\n
  Get-ChildItem $location$namely$ext | % {$_.LastWriteTime = ((get-date).AddDays(-$TimeStamp[0]).AddHours(-$TimeStamp[1]).AddMinutes(-$TimeStamp[2]).AddSeconds(-$TimeStamp[3])) }\r\n
