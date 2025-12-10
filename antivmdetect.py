@@ -15,19 +15,36 @@ import re
 import time
 import base64
 import sys
+import platform
+import ctypes
+
+
+def is_windows():
+    return platform.system().lower() == "windows"
 
 # Welcome
 print('--- Generate VirtualBox templates to help thwart VM detection and more .. - Mikael, @nsmfoo ---')
 
-if not os.geteuid()==0:
+if not is_windows() and not os.geteuid() == 0:
     sys.exit("\n[*] You need to run this script as root\n")
+elif is_windows():
+    try:
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        is_admin = False
+    if not is_admin:
+        sys.exit("\n[*] Please run this script from an elevated PowerShell prompt.\n")
 
 # Check dependencies
-dependencies = ["/usr/bin/cd-drive", "/usr/bin/acpidump", "DevManView.exe", "Volumeid.exe", "computer.lst", "user.lst", "/usr/bin/glxinfo", "/usr/sbin/smartctl"]
+if is_windows():
+    dependencies = ["VBoxManage.exe", "DevManView.exe", "Volumeid.exe", "computer.lst", "user.lst"]
+else:
+    dependencies = ["/usr/bin/cd-drive", "/usr/bin/acpidump", "DevManView.exe", "Volumeid.exe", "computer.lst", "user.lst", "/usr/bin/glxinfo", "/usr/sbin/smartctl"]
+
 for dep in dependencies:
     if not (os.path.exists(dep)):
-      print('[WARNING] Dependencies are missing, please verify that you have installed: ', dep)
-      exit()
+        print('[WARNING] Dependencies are missing, please verify that you have installed: ', dep)
+        exit()
 
 print('[*] Creating VirtualBox modifications ..')
 

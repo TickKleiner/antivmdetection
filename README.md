@@ -29,6 +29,14 @@ The main script will create the following files:
 * Make generated host script executable from current user `sudo chmod a+x xxxxx.sh`
 * If you do get the following message: "ACPI tables bigger than 64KB (VERR_TOO_MUCH_DATA)", this is due to a limitation in Virtualbox, for more context see this case: <https://github.com/nsmfoo/antivmdetection/issues/37> . Not verified to work, but <https://www.tonymacx86.com/dsdt-database> might a good resource...
 
+### Running from Windows (no WSL required)
+
+* Ensure `VBoxManage.exe`, `DevManView.exe`, `Volumeid.exe`, `computer.lst` and `user.lst` are available in the same directory as this repository or on the `PATH`.
+* Open an elevated PowerShell terminal and run `python .\antivmdetect_windows.py`.
+* The script will create a host configuration script named `<system>_host.ps1` and a minimal guest helper script named `guest_modifications.ps1` in the current directory.
+* Execute the generated host script with the target VM name: `PowerShell -ExecutionPolicy Bypass -File .\<system>_host.ps1 -VmName <vm_name>`.
+* Copy `guest_modifications.ps1` into the guest and run it once Windows is installed to restore helper binaries.
+
 ## Setup VM
 
 * Create the VM but don't start it, also exit the VirtualBox GUI. The shell script needs to be run before installation!.
