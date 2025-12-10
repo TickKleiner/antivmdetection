@@ -28,6 +28,14 @@ stdlib_platform_spec.loader.exec_module(stdlib_platform)
 from providers.hardware import get_hardware_provider, serial_randomize
 from providers.storage import get_cdrom_metadata, get_disk_metadata
 
+# Normalize storage metadata to ASCII and strip unsafe characters
+def _sanitize_storage_value(value):
+    if not isinstance(value, str) or value == "** No value to retrieve **":
+        return value
+
+    ascii_value = value.encode("utf-8", "ignore").decode("ascii", "ignore")
+    return re.sub(r"[^A-Za-z0-9 _./-]", "", ascii_value)
+
 # Welcome
 print('--- Generate VirtualBox templates to help thwart VM detection and more .. - Mikael, @nsmfoo ---')
 
@@ -81,7 +89,7 @@ for k, v in sorted(dmi_info.items()):
         logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/pcbios/0/Config/' + k + '\t\'' + v + '\'\n')
         windows_pcbios_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/pcbios/0/Config/' + k + '" "' + v + '"')
 # Disk information
-disk_dmi = get_disk_metadata(serial_randomize)
+disk_dmi = {k: _sanitize_storage_value(v) for k, v in get_disk_metadata(serial_randomize).items()}
 disk_name = subprocess.getoutput("df -P / | tail -n 1 | awk '/.*/ { print $1 }'")
 
 # Handle Ubuntu live-cd
@@ -96,7 +104,7 @@ if not stdlib_platform.system().lower().startswith('win'):
               print('[WARNING] Unable to acquire the disk serial number! Will add one, but please try to run this script on another machine instead..')
               disk_serial = 'HUA721010KLA330'
 
-            disk_dmi['SerialNumber'] = (serial_randomize(0, len(disk_serial)))
+            disk_dmi['SerialNumber'] = _sanitize_storage_value(serial_randomize(0, len(disk_serial)))
 
             if (len(disk_dmi['SerialNumber']) > 20):
                 disk_dmi['SerialNumber'] = disk_dmi['SerialNumber'][:20]
@@ -106,18 +114,18 @@ if not stdlib_platform.system().lower().startswith('win'):
     try:
         if os.path.exists(disk_name):
            disk_fwrev = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Firmware Version: [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
-           disk_dmi['FirmwareRevision'] = disk_fwrev
+           disk_dmi['FirmwareRevision'] = _sanitize_storage_value(disk_fwrev)
            if 'SG_IO' in disk_dmi['FirmwareRevision']:
              print('[WARNING] Unable to acquire the disk firmware revision! Will add one, but please try to run this script on another machine instead..')
              disk_dmi['FirmwareRevision'] = 'LMP07L3Q'
-             disk_dmi['FirmwareRevision'] = (serial_randomize(0, len(disk_dmi['FirmwareRevision'])))
+             disk_dmi['FirmwareRevision'] = _sanitize_storage_value(serial_randomize(0, len(disk_dmi['FirmwareRevision'])))
     except OSError:
         print('Error reading system disk..')
 
     try:
         if os.path.exists(disk_name):
             disk_modelno = subprocess.getoutput("smartctl -i " + disk_name + " | grep -o 'Model Family: [A-Za-z0-9_\+\/ .\"-]*' | awk '{print $3}'")
-            disk_dmi['ModelNumber'] = disk_modelno
+            disk_dmi['ModelNumber'] = _sanitize_storage_value(disk_modelno)
 
             if 'SG_IO' in disk_dmi['ModelNumber']:
               print('[WARNING] Unable to acquire the disk model number! Will add one, but please try to run this script on another machine instead..')
@@ -126,11 +134,13 @@ if not stdlib_platform.system().lower().startswith('win'):
               disk_vendor_part1 = (serial_randomize(0, len(disk_vendor_part1)))
               disk_vendor_part2 = '611D3'
               disk_vendor_part2 = (serial_randomize(0, len(disk_vendor_part2)))
-              disk_dmi['ModelNumber'] = (serial_randomize(0, len(disk_dmi['ModelNumber'])))
-              disk_dmi['ModelNumber'] = disk_vendor + ' ' + disk_vendor_part1 + '-' + disk_vendor_part2
-              disk_dmi['VendorId'] = disk_vendor
+              disk_dmi['ModelNumber'] = _sanitize_storage_value(serial_randomize(0, len(disk_dmi['ModelNumber'])))
+              disk_dmi['ModelNumber'] = _sanitize_storage_value(disk_vendor + ' ' + disk_vendor_part1 + '-' + disk_vendor_part2)
+              disk_dmi['VendorId'] = _sanitize_storage_value(disk_vendor)
     except OSError:
          print('Error reading system disk..')
+
+disk_dmi = {k: _sanitize_storage_value(v) for k, v in disk_dmi.items()}
 
 logfile.write('controller=$(VBoxManage showvminfo "$1" --machinereadable | tr -d \"\r\" | grep -i SATA)\n')
 
@@ -152,28 +162,30 @@ for k, v in disk_dmi.items():
 logfile.write('fi\n')
 
 # CD-ROM information
-cdrom_dmi = get_cdrom_metadata(serial_randomize)
+cdrom_dmi = {k: _sanitize_storage_value(v) for k, v in get_cdrom_metadata(serial_randomize).items()}
 if os.path.islink('/dev/cdrom') and not stdlib_platform.system().lower().startswith('win'):
     # CD-ROM serial - No access to a computer with a CD-ROM to verify a switch to smartcrl, at the moment.
     cdrom_serial = subprocess.getoutput("hdparm -i /dev/cdrom | grep -o 'SerialNo=[A-Za-z0-9_\+\/ .\"-]*' | awk -F= '{print $2}'")
     if cdrom_serial:
-        cdrom_dmi['ATAPISerialNumber'] = (serial_randomize(0, len(cdrom_serial)))
+        cdrom_dmi['ATAPISerialNumber'] = _sanitize_storage_value(serial_randomize(0, len(cdrom_serial)))
     else:
         cdrom_dmi['ATAPISerialNumber'] = "** No value to retrieve **"
 
     # CD-ROM firmeware rev
     cdrom_fwrev = subprocess.getoutput("cd-drive | grep Revision | grep  ':' | awk {' print $3 \" \" $4'}")
-    cdrom_dmi['ATAPIRevision'] = cdrom_fwrev.replace(" ", "")
+    cdrom_dmi['ATAPIRevision'] = _sanitize_storage_value(cdrom_fwrev.replace(" ", ""))
 
     # CD-ROM Model numberA-Za-z0-9_\+\/ .\"-
     cdrom_modelno = subprocess.getoutput("cd-drive | grep Model | grep  ':' | awk {' print $3 \" \" $4'}")
-    cdrom_dmi['ATAPIProductId'] = cdrom_modelno
+    cdrom_dmi['ATAPIProductId'] = _sanitize_storage_value(cdrom_modelno)
 
     # CD-ROM Vendor
     cdrom_vendor = subprocess.getoutput("cd-drive | grep Vendor | grep  ':' | awk {' print $3 '}")
-    cdrom_dmi['ATAPIVendorId'] = cdrom_vendor
+    cdrom_dmi['ATAPIVendorId'] = _sanitize_storage_value(cdrom_vendor)
 elif not os.path.islink('/dev/cdrom'):
     logfile.write('# No CD-ROM detected: ** No values to retrieve **\n')
+
+cdrom_dmi = {k: _sanitize_storage_value(v) for k, v in cdrom_dmi.items()}
 
 # And some more
 if os.path.islink('/dev/cdrom'):
@@ -254,12 +266,12 @@ else:
     acpi_list_facp = list(filter(None, acpi_list_facp))
 
     if len(acpi_list_dsdt) < 6:
-        print('[WARNING] Unable to parse ACPI DSDT values from acpidump output. Exiting to avoid writing invalid commands.')
-        sys.exit(1)
+        print('[WARNING] Unable to parse ACPI DSDT values from acpidump output. Skipping guest ACPI script generation to avoid invalid commands.')
+        acpi_list_dsdt = []
 
     if len(acpi_list_facp) < 4:
-        print('[WARNING] Unable to parse ACPI FACP values from acpidump output. Exiting to avoid writing invalid commands.')
-        sys.exit(1)
+        print('[WARNING] Unable to parse ACPI FACP values from acpidump output. Skipping guest ACPI script generation to avoid invalid commands.')
+        acpi_list_facp = []
 
     def _validate_field(value, field_name, expected_len, digits_only=False):
         if len(value) != expected_len:
@@ -270,35 +282,41 @@ else:
             if not value.isdigit():
                 raise ValueError(f"{field_name} contained non-digit characters")
         else:
-            if not re.match(r'^[A-Za-z0-9_]+$', value):
+            if not re.match(r'^[A-Za-z0-9]+$', value):
                 raise ValueError(f"{field_name} contained invalid characters")
         normalized_value = value.upper()
         return normalized_value
 
-    try:
-        acpi_list_dsdt[1] = _validate_field(acpi_list_dsdt[1], 'ACPI OEM ID', 6)
-        acpi_list_dsdt[2] = _validate_field(acpi_list_dsdt[2], 'ACPI OEM Table ID', 8)
-        acpi_list_dsdt[3] = _validate_field(acpi_list_dsdt[3], 'ACPI OEM Revision', 8, digits_only=True)
-        acpi_list_dsdt[4] = _validate_field(acpi_list_dsdt[4], 'ACPI Creator ID', 4)
-        acpi_list_dsdt[5] = _validate_field(acpi_list_dsdt[5], 'ACPI Creator Revision', 8, digits_only=True)
+    acpi_values_valid = bool(acpi_list_dsdt) and bool(acpi_list_facp)
 
-        acpi_list_facp[1] = _validate_field(acpi_list_facp[1], 'ACPI FACP OEM ID', 6)
-        acpi_list_facp[2] = _validate_field(acpi_list_facp[2], 'ACPI FACP OEM Table ID', 8)
-        acpi_list_facp[3] = _validate_field(acpi_list_facp[3], 'ACPI FACP OEM Revision', 8, digits_only=True)
-    except ValueError as exc:
-        print(f"[WARNING] Invalid ACPI table data detected ({exc}). Exiting to avoid writing invalid commands.")
-        sys.exit(1)
+    if acpi_values_valid:
+        try:
+            acpi_list_dsdt[1] = _validate_field(acpi_list_dsdt[1], 'ACPI OEM ID', 6)
+            acpi_list_dsdt[2] = _validate_field(acpi_list_dsdt[2], 'ACPI OEM Table ID', 8)
+            acpi_list_dsdt[3] = _validate_field(acpi_list_dsdt[3], 'ACPI OEM Revision', 8, digits_only=True)
+            acpi_list_dsdt[4] = _validate_field(acpi_list_dsdt[4], 'ACPI Creator ID', 4)
+            acpi_list_dsdt[5] = _validate_field(acpi_list_dsdt[5], 'ACPI Creator Revision', 8, digits_only=True)
+
+            acpi_list_facp[1] = _validate_field(acpi_list_facp[1], 'ACPI FACP OEM ID', 6)
+            acpi_list_facp[2] = _validate_field(acpi_list_facp[2], 'ACPI FACP OEM Table ID', 8)
+            acpi_list_facp[3] = _validate_field(acpi_list_facp[3], 'ACPI FACP OEM Revision', 8, digits_only=True)
+        except ValueError as exc:
+            print(f"[WARNING] Invalid ACPI table data detected ({exc}). Skipping guest ACPI script generation to avoid writing invalid commands.")
+            acpi_values_valid = False
 
 # An attempt to solve some of the issues with the AcpiCreatorRev values, I blame the VBox team ..
-if isinstance(acpi_list_dsdt[5],str):
- acpi_list_dsdt[5] = re.sub("[^0-9]", "", acpi_list_dsdt[5])
+if acpi_values_valid:
+    if isinstance(acpi_list_dsdt[5], str):
+        acpi_list_dsdt[5] = re.sub("[^0-9]", "", acpi_list_dsdt[5])
 
-logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiOemId\t\'' + acpi_list_dsdt[1] + '\'\n')
-logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId\t\'' + acpi_list_dsdt[4] + '\'\n')
-logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev\t\'' + acpi_list_dsdt[5] + '\'\n')
-windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiOemId" "' + acpi_list_dsdt[1] + '"')
-windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId" "' + acpi_list_dsdt[4] + '"')
-windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev" "' + acpi_list_dsdt[5] + '"')
+    logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiOemId\t\'' + acpi_list_dsdt[1] + '\'\n')
+    logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId\t\'' + acpi_list_dsdt[4] + '\'\n')
+    logfile.write('VBoxManage setextradata "$1" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev\t\'' + acpi_list_dsdt[5] + '\'\n')
+    windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiOemId" "' + acpi_list_dsdt[1] + '"')
+    windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId" "' + acpi_list_dsdt[4] + '"')
+    windows_acpi_cmds.append('VBoxManage.exe setextradata "$vmName" "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev" "' + acpi_list_dsdt[5] + '"')
+else:
+    print('[WARNING] ACPI table values are invalid or incomplete; skipping guest ACPI script generation to avoid mojibake.')
 
 # Randomize MAC address, based on the host interface MAC
 find_int = netifaces.gateways()['default'][netifaces.AF_INET][1]
