@@ -10,6 +10,7 @@ import platform
 import random
 import re
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -17,9 +18,17 @@ from typing import Any, Dict, List, Optional
 
 import netifaces
 
-from ..model import CdromInfo, DiskInfo, GuestData, HardwareSnapshot, HostData, SnapshotMetadata, SnapshotResources
+from ..model import (
+    AcpiTables,
+    CdromInfo,
+    DiskInfo,
+    GuestData,
+    HardwareSnapshot,
+    HostData,
+    SnapshotMetadata,
+    SnapshotResources,
+)
 from ..util.random import ENV_SEED_KEY, build_rng
-from . import snapshot as snapshot_io
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,38 +36,21 @@ STRING_DEFAULT = "string:** No value to retrieve **"
 VALUE_DEFAULT = "** No value to retrieve **"
 
 
-def collect_live_snapshot(
-    *, rng: Optional[random.Random] = None, snapshot_path: Optional[str] = None
-) -> HardwareSnapshot:
-    """Collect a best-effort hardware snapshot on Windows.
-
-    ACPI table dumps are not available on Windows; pass a snapshot collected on Linux
-    when DSDT/FADT/SSDT data is required.
-    """
+def collect_live_snapshot(*, rng: Optional[random.Random] = None) -> HardwareSnapshot:
+    """Collect hardware information directly on a Windows host."""
     _ensure_windows()
     rng = _maybe_rng(rng)
 
-    base_snapshot: Optional[HardwareSnapshot] = None
-    if snapshot_path:
-        LOGGER.info("Loading supplemental snapshot from %s", snapshot_path)
-        base_snapshot = snapshot_io.load_snapshot(Path(snapshot_path))
-
-    dmi_info = _collect_dmi_info(rng, fallback=base_snapshot.dmi if base_snapshot else None)
-    disk_info = _collect_disk_info(rng, fallback=base_snapshot.disk if base_snapshot else None)
-    cdrom_info = _collect_cdrom_info(rng, fallback=base_snapshot.cdrom if base_snapshot else None)
-
-    acpi = base_snapshot.acpi if base_snapshot and base_snapshot.acpi else None
-    if acpi is None:
-        LOGGER.warning(
-            "ACPI tables cannot be collected on Windows; use --from-snapshot created on Linux for full ACPI fidelity"
-        )
-
-    host = _collect_host_data(rng, fallback=base_snapshot.host if base_snapshot else None)
-    guest = _collect_guest_data(rng, fallback=base_snapshot.guest if base_snapshot else None)
-    resources = base_snapshot.resources if base_snapshot and base_snapshot.resources else _collect_resources()
+    dmi_info = _collect_dmi_info(rng)
+    disk_info = _collect_disk_info(rng)
+    cdrom_info = _collect_cdrom_info(rng)
+    acpi = _collect_acpi_tables(dmi_info, rng)
+    host = _collect_host_data(rng)
+    guest = _collect_guest_data(rng, acpi)
+    resources = _collect_resources()
 
     metadata = SnapshotMetadata(
-        created_from="windows-live" + ("-with-snapshot" if base_snapshot else ""),
+        created_from="windows-live",
         created_at=dt.datetime.utcnow().isoformat() + "Z",
         host_identifier=platform.node(),
     )
@@ -79,10 +71,20 @@ def _ensure_windows() -> None:
         raise RuntimeError("Windows live collection is only available on Windows hosts")
 
 
-def _collect_dmi_info(rng: Optional[random.Random], fallback: Optional[Dict[str, str]]) -> Dict[str, str]:
-    info: Dict[str, str] = dict(fallback or {})
+def _collect_dmi_info(rng: Optional[random.Random]) -> Dict[str, str]:
+    info: Dict[str, str] = {}
 
-    bios = _ps_single("Win32_BIOS", ["Manufacturer", "SMBIOSBIOSVersion", "ReleaseDate", "SMBIOSMajorVersion", "SMBIOSMinorVersion", "BIOSVersion"])
+    bios = _ps_single(
+        "Win32_BIOS",
+        [
+            "Manufacturer",
+            "SMBIOSBIOSVersion",
+            "ReleaseDate",
+            "SMBIOSMajorVersion",
+            "SMBIOSMinorVersion",
+            "BIOSVersion",
+        ],
+    )
     bios_vendor = _safe_string(bios, "Manufacturer")
     _set_with_default(info, "DmiBIOSVendor", f"string:{bios_vendor}" if bios_vendor else None, STRING_DEFAULT)
     bios_version_raw = _safe_string(bios, "SMBIOSBIOSVersion") or _first_list_value(bios, "BIOSVersion")
@@ -111,7 +113,10 @@ def _collect_dmi_info(rng: Optional[random.Random], fallback: Optional[Dict[str,
     _set_with_default(info, "DmiBoardLocInChass", None, STRING_DEFAULT)
     _set_with_default(info, "DmiBoardBoardType", None, VALUE_DEFAULT)
 
-    system_product = _ps_single("Win32_ComputerSystemProduct", ["UUID", "IdentifyingNumber", "Name", "Vendor", "Version", "SKUNumber"])
+    system_product = _ps_single(
+        "Win32_ComputerSystemProduct",
+        ["UUID", "IdentifyingNumber", "Name", "Vendor", "Version", "SKUNumber"],
+    )
     sku = _safe_string(system_product, "SKUNumber")
     _set_with_default(info, "DmiSystemSKU", sku, VALUE_DEFAULT)
     system_version = _safe_string(system_product, "Version")
@@ -126,8 +131,7 @@ def _collect_dmi_info(rng: Optional[random.Random], fallback: Optional[Dict[str,
     family_data = _ps_single("Win32_ComputerSystem", ["SystemFamily"])
     system_family = _safe_string(family_data, "SystemFamily")
     _set_with_default(info, "DmiSystemFamily", f"string:{system_family}" if system_family else None, "Not Specified")
-    if "DmiSystemUuid" not in info:
-        info["DmiSystemUuid"] = uuid.UUID(int=rng.getrandbits(128)).hex.upper() if rng else (uuid.uuid4().hex or "").upper()
+    info["DmiSystemUuid"] = uuid.UUID(int=rng.getrandbits(128)).hex.upper() if rng else (uuid.uuid4().hex or "").upper()
 
     chassis = _ps_single("Win32_SystemEnclosure", ["Manufacturer", "SMBIOSAssetTag", "SerialNumber", "Version", "ChassisTypes"])
     chassis_vendor = _safe_string(chassis, "Manufacturer")
@@ -154,7 +158,7 @@ def _collect_dmi_info(rng: Optional[random.Random], fallback: Optional[Dict[str,
     return info
 
 
-def _collect_disk_info(rng: Optional[random.Random], fallback: Optional[DiskInfo]) -> DiskInfo:
+def _collect_disk_info(rng: Optional[random.Random]) -> DiskInfo:
     info = DiskInfo()
     disk = _ps_single("Win32_DiskDrive", ["SerialNumber", "FirmwareRevision", "FirmwareVersion", "Model"])
     if disk:
@@ -167,16 +171,10 @@ def _collect_disk_info(rng: Optional[random.Random], fallback: Optional[DiskInfo
         model = _safe_string(disk, "Model")
         if model:
             info.model_number = model
-
-    if fallback:
-        info.serial_number = info.serial_number or fallback.serial_number
-        info.firmware_revision = info.firmware_revision or fallback.firmware_revision
-        info.model_number = info.model_number or fallback.model_number
-
     return info
 
 
-def _collect_cdrom_info(rng: Optional[random.Random], fallback: Optional[CdromInfo]) -> CdromInfo:
+def _collect_cdrom_info(rng: Optional[random.Random]) -> CdromInfo:
     info = CdromInfo()
     cdrom = _ps_single("Win32_CDROMDrive", ["SerialNumber", "MfrAssignedRevisionLevel", "Name", "Manufacturer"])
     if cdrom:
@@ -193,48 +191,131 @@ def _collect_cdrom_info(rng: Optional[random.Random], fallback: Optional[CdromIn
         if vendor:
             info.atapi_vendor_id = vendor
 
-    if fallback:
-        info.atapi_serial = info.atapi_serial or fallback.atapi_serial
-        info.atapi_revision = info.atapi_revision or fallback.atapi_revision
-        info.atapi_product_id = info.atapi_product_id or fallback.atapi_product_id
-        info.atapi_vendor_id = info.atapi_vendor_id or fallback.atapi_vendor_id
-
     if not any([info.atapi_serial, info.atapi_revision, info.atapi_product_id, info.atapi_vendor_id]):
         LOGGER.info("No CD-ROM information detected on Windows host")
 
     return info
 
 
-def _collect_host_data(rng: Optional[random.Random], fallback: Optional[HostData]) -> HostData:
-    cpu_brand = _collect_cpu_brand(fallback.cpu_brand if fallback else None)
-    mac_address = _generate_mac_address(rng, fallback=fallback.mac_address if fallback else None)
+def _collect_acpi_tables(dmi: Dict[str, str], rng: Optional[random.Random]) -> AcpiTables:
+    acpidump_path = Path("acpidump.exe")
+    if acpidump_path.exists():
+        acpi = _collect_acpi_with_acpidump(acpidump_path)
+        if acpi:
+            return acpi
+        LOGGER.warning("acpidump.exe found but collection failed; falling back to synthetic ACPI tables")
+    else:
+        LOGGER.warning("acpidump.exe not found; using synthetic ACPI tables on Windows")
+    return _synthetic_acpi_tables(dmi, rng)
+
+
+def _collect_acpi_with_acpidump(acpidump_path: Path) -> Optional[AcpiTables]:
+    summary = subprocess.run([str(acpidump_path), "-s"], capture_output=True, text=True, check=False)
+    if summary.returncode != 0 or not summary.stdout:
+        LOGGER.debug("acpidump.exe -s failed (%s): %s", summary.returncode, summary.stderr.strip())
+        return None
+    dsdt_tokens = _parse_table_tokens(summary.stdout, "DSDT")
+    facp_tokens = _parse_table_tokens(summary.stdout, "FACP")
+    ssdt_ids = _parse_ssdt_ids(summary.stdout)
+    dsdt_blob = _extract_dsdt_blob(acpidump_path)
+    return AcpiTables(dsdt=dsdt_tokens, facp=facp_tokens, rsdt=[], ssdt=ssdt_ids, dsdt_blob_b64=dsdt_blob)
+
+
+def _parse_table_tokens(text: str, signature: str) -> List[str]:
+    for line in text.splitlines():
+        if signature not in line:
+            continue
+        match = re.search(r"\(([^)]*)\)", line)
+        if not match:
+            continue
+        tokens = [tok for tok in match.group(1).split() if tok]
+        if signature == "DSDT" and len(tokens) > 5:
+            try:
+                tokens[5] = re.sub("[^0-9]", "", tokens[5])
+            except Exception:
+                pass
+        return tokens
+    return []
+
+
+def _parse_ssdt_ids(text: str) -> List[str]:
+    ids: List[str] = []
+    for line in text.splitlines():
+        if "SSDT" not in line:
+            continue
+        match = re.search(r"SSDT[^\\(]*\\(([^)]*)\\)", line)
+        if match:
+            parts = [p for p in match.group(1).split() if p]
+            ids.extend(parts[:3])
+            if len(ids) >= 3:
+                break
+    return ids[:3]
+
+
+def _extract_dsdt_blob(acpidump_path: Path) -> Optional[str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run([str(acpidump_path), "-b"], cwd=tmp, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            LOGGER.debug("acpidump.exe -b failed (%s): %s", result.returncode, result.stderr.strip())
+            return None
+        candidates = list(Path(tmp).glob("DSDT.*")) + list(Path(tmp).glob("dsdt.*")) + list(Path(tmp).glob("*DSDT*"))
+        if not candidates:
+            return None
+        dsdt_bytes = candidates[0].read_bytes()
+        return base64.b64encode(dsdt_bytes).decode("utf-8")
+
+
+def _synthetic_acpi_tables(dmi: Dict[str, str], rng: Optional[random.Random]) -> AcpiTables:
+    def _strip_prefix(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return value.replace("string:", "").replace(" ", "").replace("_", "").upper()
+
+    manu = _strip_prefix(dmi.get("DmiSystemVendor")) or "OEMID"
+    product = _strip_prefix(dmi.get("DmiSystemProduct")) or "TABLEID"
+    creator = _strip_prefix(dmi.get("DmiBoardVendor")) or "INTL"
+    rev = re.sub("[^0-9]", "", dmi.get("DmiBIOSReleaseDate", ""))[-8:]
+    if not rev:
+        rev = "0001"
+    dsdt = [manu[:6], manu[:6], product[:6], product[:6], creator[:4], rev[:8]]
+    facp = ["FACP", manu[:6], product[:6], rev[:4]]
+    ssdt = _synthetic_ssdt_ids(rng)
+    return AcpiTables(dsdt=dsdt, facp=facp, rsdt=[], ssdt=ssdt, dsdt_blob_b64=None)
+
+
+def _synthetic_ssdt_ids(rng: Optional[random.Random]) -> List[str]:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    rand = rng or random
+    ids = []
+    for prefix in ("SSDT", "SLIC", "MCFG"):
+        suffix = "".join(rand.choice(alphabet) for _ in range(2))
+        ids.append(f"{prefix}{suffix}")
+    return ids
+
+
+def _collect_host_data(rng: Optional[random.Random]) -> HostData:
+    cpu_brand = _collect_cpu_brand()
+    mac_address = _generate_mac_address(rng, fallback=None)
     devman_arch = _detect_devman_architecture()
-    if not devman_arch and fallback and fallback.devman_arch:
-        devman_arch = fallback.devman_arch
     return HostData(cpu_brand=cpu_brand, mac_address=mac_address, devman_arch=devman_arch)
 
 
-def _collect_guest_data(rng: Optional[random.Random], fallback: Optional[GuestData]) -> GuestData:
-    fallback = fallback or GuestData()
-    ssdt_ids = fallback.ssdt_ids or _collect_ssdt_ids()
+def _collect_guest_data(rng: Optional[random.Random], acpi: Optional[AcpiTables]) -> GuestData:
+    ssdt_ids = acpi.ssdt if acpi and acpi.ssdt else _synthetic_ssdt_ids(rng)
     dac_type, chip_type = _collect_video_strings()
-    if not dac_type:
-        dac_type = fallback.dac_type
-    if not chip_type:
-        chip_type = fallback.chip_type
     return GuestData(
-        install_date_hex=fallback.install_date_hex or _random_install_date_hex(rng),
-        machine_guid=fallback.machine_guid or _random_machine_guid(rng),
-        product_id=fallback.product_id or _random_product_id(rng),
+        install_date_hex=_random_install_date_hex(rng),
+        machine_guid=_random_machine_guid(rng),
+        product_id=_random_product_id(rng),
         ssdt_ids=ssdt_ids,
         dac_type=dac_type,
         chip_type=chip_type,
     )
 
 
-def _collect_cpu_brand(fallback: Optional[str]) -> Optional[str]:
+def _collect_cpu_brand() -> Optional[str]:
     cpu = _ps_single("Win32_Processor", ["Name"])
-    brand = _safe_string(cpu, "Name") or fallback or platform.processor()
+    brand = _safe_string(cpu, "Name") or platform.processor()
     if brand and len(brand) < 47:
         brand = brand.ljust(47, " ")
     return brand
@@ -275,11 +356,6 @@ def _detect_devman_architecture() -> Optional[str]:
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Unable to detect DevManView architecture: %s", exc)
     return None
-
-
-def _collect_ssdt_ids() -> List[str]:
-    LOGGER.warning("SSDT IDs are not accessible on Windows; provide a Linux snapshot if SSDT data is required")
-    return []
 
 
 def _collect_video_strings() -> tuple[Optional[str], Optional[str]]:

@@ -14,7 +14,7 @@ Generate host- and guest-side templates for VirtualBox to make simple VM detecti
 | Platform | Live mode | Snapshot mode |
 | --- | --- | --- |
 | Linux | Supported (new collectors/generators) | Supported (`--collect-snapshot`) |
-| Windows | Not supported | Supported for generation only (`--from-snapshot` created on Linux) |
+| Windows | Best effort (ACPI via `acpidump.exe` if available; synthetic fallback) | Supported for generation (`--from-snapshot` created on Linux) |
 
 ## Running on Linux (live mode)
 
@@ -36,10 +36,11 @@ Snapshots include the DSDT blob and base64-encoded helper files (DevManView, Vol
 
 ## Windows usage
 
-Windows live collection is not available. Use snapshot mode:
+Live mode now runs on Windows, with ACPI data best-effort:
 
-1. Collect a snapshot on a supported Linux machine: `sudo python -m antivmdetection --collect-snapshot ./snapshot.json`.
-2. Copy the snapshot to Windows and generate outputs: `python -m antivmdetection --from-snapshot snapshot.json --output-dir C:\path\to\artifacts`.
+* Optional: place `acpidump.exe` in the project root to capture real DSDT/FACP/SSDT data. Without it, synthetic ACPI values are generated and logged.
+* Run as an elevated user so WMI can read hardware details: `python -m antivmdetection --output-dir C:\path\to\artifacts --seed 1337`.
+* Snapshot mode still works the same and remains the most accurate for ACPI data: collect on Linux, then `python -m antivmdetection --from-snapshot snapshot.json --output-dir C:\path\to\artifacts` on Windows.
 
 Apply the guest PowerShell script inside your Windows VM. Host-side changes still have to be applied from the VirtualBox host.
 
