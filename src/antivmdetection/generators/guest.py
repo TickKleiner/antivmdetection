@@ -24,11 +24,19 @@ def generate_guest_outputs(snapshot: HardwareSnapshot, output_dir: Path) -> Gene
     dsdt = acpi.dsdt if acpi else []
     facp = acpi.facp if acpi else []
     ssdt_ids = snapshot.guest.ssdt_ids if snapshot.guest else []
+    resources = snapshot.resources
+    has_lists = bool(resources and resources.computer_list and resources.user_list)
+    has_volumeid = bool(resources and resources.volumeid_b64)
+    if not has_volumeid:
+        LOGGER.warning("Volumeid.exe missing in snapshot resources; volume ID spoofing will be skipped")
+    if not has_lists:
+        LOGGER.warning("computer.lst/user.lst missing in snapshot resources; using fallback names for rename and file generation")
 
     manu_prefill = _manu_prefix(dsdt, double_underscore=True)
     manu = _manu_prefix(dsdt, double_underscore=False)
     version = "$version = (Get-WmiObject win32_operatingsystem).version"
     lines: List[str] = [version]
+    lines.extend(_windows_admin_block())
 
     lines.extend(_dsdt_block(dsdt, manu_prefill))
     lines.extend(_fadt_block(manu, facp))
@@ -68,9 +76,13 @@ def generate_guest_outputs(snapshot: HardwareSnapshot, output_dir: Path) -> Gene
     if snapshot.guest:
         lines.extend(_product_id_block(snapshot.guest.product_id))
 
-    lines.extend(_volumeid_block(snapshot.resources.volumeid_b64 if snapshot.resources else None))
-    lines.extend(_computer_user_blocks(snapshot.resources))
-    lines.extend(_powershell_blob_block())
+    if has_volumeid:
+        lines.extend(_volumeid_block(snapshot.resources.volumeid_b64 if snapshot.resources else None))
+    else:
+        lines.append('Write-Warning "Volumeid.exe not provided in snapshot resources; skipping volume ID spoofing."')
+
+    lines.extend(_computer_user_blocks(snapshot.resources, has_volumeid=has_volumeid, has_lists=has_lists))
+    lines.extend(_powershell_blob_block(has_lists=has_lists))
     lines.extend(_assoc_block())
     lines.extend(_sanitize_block())
     lines.append('[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")')
@@ -89,6 +101,21 @@ def _guest_script_name(dmi: Dict[str, str]) -> str:
             + ".ps1"
         )
     return f"{dmi.get('DmiChassisType', '')}_{dmi.get('DmiBoardProduct', '').replace('string:', '')}.ps1"
+
+
+def _windows_admin_block() -> List[str]:
+    return [
+        "# Ensure we are running with elevation before touching ACPI/registry",
+        "$isAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+        "if (-not $isAdministrator) {",
+        '    Write-Warning "Administrator privileges are required for this script. Relaunching elevated..."',
+        "    $argsList = @()",
+        "    if ($MyInvocation.UnboundArguments) { $argsList += $MyInvocation.UnboundArguments }",
+        '    if ($PSCommandPath) { $argsList = @("-File", "`"$PSCommandPath`"") + $argsList }',
+        '    Start-Process -FilePath "powershell.exe" -ArgumentList $argsList -Verb RunAs -ErrorAction Stop',
+        "    exit",
+        "}",
+    ]
 
 
 def _manu_prefix(dsdt: List[str], double_underscore: bool) -> str:
@@ -431,46 +458,63 @@ def _volumeid_block(volumeid_b64: Optional[str]) -> List[str]:
     return lines
 
 
-def _computer_user_blocks(resources) -> List[str]:
+def _format_ps_array(values: List[str]) -> str:
+    return ", ".join(f'"{value}"' for value in values)
+
+
+def _computer_user_blocks(resources, *, has_volumeid: bool, has_lists: bool) -> List[str]:
+    computer_fallback = ["DESKTOP-001", "WORKSTATION-02", "LAPTOP-15"]
+    user_fallback = ["user01", "analyst", "student"]
     lines: List[str] = []
-    if resources and resources.computer_list:
+    if has_lists and resources and resources.computer_list:
         comp_b64 = base64.b64encode("\n".join(resources.computer_list).encode("utf-8")).decode("utf-8")
         lines.append(f"$base64_computer = '{comp_b64}'")
         lines.append("[IO.File]::WriteAllBytes('computer.lst',[System.Convert]::FromBase64String($base64_computer))")
-    if resources and resources.user_list:
+    if has_lists and resources and resources.user_list:
         user_b64 = base64.b64encode("\n".join(resources.user_list).encode("utf-8")).decode("utf-8")
         lines.append(f"$base64_user = '{user_b64}'")
         lines.append("[IO.File]::WriteAllBytes('user.lst',[System.Convert]::FromBase64String($base64_user))")
 
-    user_computer = """
-    $result = ""
-    $char_set = "ABCDEF0123456789".ToCharArray()
-    for ($x = 0; $x -lt 8; $x++) {
-     $result += $char_set | Get-Random
-    }
+    computer_names = resources.computer_list if has_lists and resources and resources.computer_list else computer_fallback
+    user_names = resources.user_list if has_lists and resources and resources.user_list else user_fallback
+    lines.append(f"$computerNames = @({_format_ps_array(computer_names)})")
+    lines.append('if (Test-Path "computer.lst") { $computerNames = Get-Content "computer.lst" }')
+    lines.append(f"$userNames = @({_format_ps_array(user_names)})")
+    lines.append('if (Test-Path "user.lst") { $userNames = Get-Content "user.lst" }')
 
-    $volid1 = $result.Substring(0,4)
-    $volid2 = $result.Substring(4)
-    $weltschmerz = "c:"
-    $dieweltschmerz = "$weltschmerz $volid1-$volid2"
-    Invoke-Expression "./volumeid.exe $dieweltschmerz"
+    if has_volumeid:
+        lines.append('if (Test-Path "Volumeid.exe") {')
+        lines.append("    $result = \"\"")
+        lines.append('    $char_set = "ABCDEF0123456789".ToCharArray()')
+        lines.append("    for ($x = 0; $x -lt 8; $x++) {")
+        lines.append("     $result += $char_set | Get-Random")
+        lines.append("    }")
+        lines.append("")
+        lines.append("    $volid1 = $result.Substring(0,4)")
+        lines.append("    $volid2 = $result.Substring(4)")
+        lines.append('    $weltschmerz = "c:"')
+        lines.append('    $dieweltschmerz = "$weltschmerz $volid1-$volid2"')
+        lines.append('    Invoke-Expression "./volumeid.exe $dieweltschmerz"')
+        lines.append("} else {")
+        lines.append('    Write-Warning "Volumeid.exe missing on disk; skipping volume ID spoofing."')
+        lines.append("}")
+    else:
+        lines.append('Write-Warning "Volumeid.exe not provided; skipping volume ID spoofing."')
 
-    $computer = Get-Random -InputObject (get-content computer.lst)
-    (Get-WmiObject Win32_ComputerSystem).Rename($computer)
-
-    $user = Get-Random -InputObject (get-content user.lst)
-    $current_user = $ENV:username
-    (Get-WmiObject Win32_UserAccount -Filter "Name='$current_user'").Rename($user)
-
-    # Add waldo file
-    New-Item kummerspeck -type file
-    """
-    lines.append(user_computer.strip())
+    lines.append("$computer = Get-Random -InputObject $computerNames")
+    lines.append("(Get-WmiObject Win32_ComputerSystem).Rename($computer)")
+    lines.append("$user = Get-Random -InputObject $userNames")
+    lines.append('$current_user = $ENV:username')
+    lines.append('(Get-WmiObject Win32_UserAccount -Filter "Name=\'$current_user\'").Rename($user)')
+    lines.append("New-Item kummerspeck -type file")
     return lines
 
 
-def _powershell_blob_block() -> List[str]:
-    ps_blob = """
+def _powershell_blob_block(has_lists: bool) -> List[str]:
+    prefix = ""
+    if not has_lists:
+        prefix = "# computer.lst not provided; using fallback names for generated files\r\n"
+    ps_blob = prefix + r"""
 # Pop-up
  # Windows 10 (Enterprise..) does not ask for confirmation by default
  if ($version -notlike '10.0*') {
@@ -486,11 +530,17 @@ function RandomDate {
   return $days,$hours,$minutes,$seconds
 }
 
+# Name sources for creating artifacts
+ $nameSource = @("report","notes","document","resume","presentation")
+ if (Test-Path "computer.lst") {
+  $nameSource = Get-Content computer.lst
+ }
+
 # Generate files
 function GenFiles([string]$status) {
  $TimeStamp = RandomDate
  $ext = Get-Random -input ".pdf",".txt",".docx",".doc",".xls", ".xlsx",".zip",".png",".jpg", ".jpeg", ".gif", ".bmp", ".html", ".htm", ".ppt", ".pptx"
- $namely = Get-Random -InputObject (get-content computer.lst)
+ $namely = Get-Random -InputObject $nameSource
  
  if ($version -notlike '10.0*') {
   $location = Get-Random -input "$ENV:userprofile\\Desktop\\", "$ENV:userprofile\\Documents\\", "$ENV:homedrive\\", "$ENV:userprofile\\Downloads\\", "$ENV:userprofile\\Pictures\\"
@@ -545,7 +595,7 @@ foreach ($z in $assoc_ext) {
 
 def _sanitize_block() -> List[str]:
     lines: List[str] = []
-    lines.append("Remove-Item Volumeid.exe, user.lst, computer.lst, DevManView.exe")
-    lines.append("Remove-Item -Path HKCU:\\Software\\Sysinternals\\VolumeID -Recurse")
-    lines.append("Remove-Item -Path HKCU:\\Software\\Sysinternals -Recurse")
+    lines.append("Remove-Item Volumeid.exe, user.lst, computer.lst, DevManView.exe -ErrorAction SilentlyContinue")
+    lines.append("Remove-Item -Path HKCU:\\Software\\Sysinternals\\VolumeID -Recurse -ErrorAction SilentlyContinue")
+    lines.append("Remove-Item -Path HKCU:\\Software\\Sysinternals -Recurse -ErrorAction SilentlyContinue")
     return lines

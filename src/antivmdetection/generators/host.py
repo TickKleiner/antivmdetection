@@ -94,6 +94,7 @@ def _generate_windows_host_lines(snapshot: HardwareSnapshot, dsdt_name: Optional
     lines.append("  [Parameter(Mandatory=$true)]")
     lines.append("  [string]$VmName")
     lines.append(")")
+    lines.extend(_windows_admin_block())
     lines.append("")
     lines.append('$VBoxManage = "VBoxManage"')
     lines.append(
@@ -440,6 +441,18 @@ def _warning_block_ps(devman_arch: Optional[str]) -> List[str]:
             'if ($devman_arc -ne $arc_devman) { Write-Warning "[WARNING] Please use the DevManView version that coresponds to the guest architecture: $devman_arc"; }'
         )
     return lines
+
+
+def _windows_admin_block() -> List[str]:
+    return [
+        "$isAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+        "if (-not $isAdministrator) {",
+        '  Write-Warning "Administrator privileges are required for this script. Re-launching elevated..."',
+        '  $argsList = @("-File", "`"$PSCommandPath`"", "-VmName", "`"$VmName`"")',
+        '  Start-Process -FilePath "powershell.exe" -ArgumentList $argsList -Verb RunAs -ErrorAction Stop',
+        "  exit",
+        "}",
+    ]
 
 
 def _dsdt_name(snapshot: HardwareSnapshot) -> Optional[str]:

@@ -1,3 +1,7 @@
 *.pyc
+*.exe
+*.bin
+*.ps1
+/CloakBox/*
 antivmdetection.code-workspace
 AGENTS.md
