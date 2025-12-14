@@ -1,0 +1,51 @@
+{
+  "dmi": {
+    "DmiBIOSVendor": "string:Acme",
+    "DmiBIOSVersion": "string:1.23",
+    "DmiSystemProduct": "string:AcmeUltra",
+    "DmiSystemVendor": "string:AcmeCorp"
+  },
+  "disk": {
+    "serial_number": "ACME1234567890",
+    "firmware_revision": "FW1.2.3",
+    "model_number": "ACME DISK 9000"
+  },
+  "cdrom": {
+    "atapi_serial": "CD123456",
+    "atapi_revision": "REV_01",
+    "atapi_product_id": "ACME_CD",
+    "atapi_vendor_id": "ACME"
+  },
+  "acpi": {
+    "dsdt": ["ACME", "OEMID", "TABLEID", "REV", "CREATOR", "0001"],
+    "facp": ["FACP", "OEMID", "TABLEID", "0001"],
+    "rsdt": [],
+    "ssdt": ["SSDT1", "SSDT2", "SSDT3"],
+    "dsdt_blob_b64": "QUJD"
+  },
+  "host": {
+    "cpu_brand": "Acme CPU Brand String                               ",
+    "mac_address": "AABBCCDDEEFF",
+    "devman_arch": "64"
+  },
+  "guest": {
+    "install_date_hex": "0x123",
+    "machine_guid": "11111111-2222-3333-4444-555555555555",
+    "product_id": "11111-222-3333333-44444",
+    "ssdt_ids": ["SSDT1", "SSDT2", "SSDT3"],
+    "dac_type": "Acme Dac",
+    "chip_type": "Acme Chip"
+  },
+  "resources": {
+    "devmanview_b64": "RFNN",
+    "volumeid_b64": "VkxJRA==",
+    "computer_list": ["comp1", "comp2"],
+    "user_list": ["user1", "user2"],
+    "clipboard_b64": null
+  },
+  "metadata": {
+    "created_from": "unit-test",
+    "created_at": "2024-01-01T00:00:00Z",
+    "host_identifier": "test-host"
+  }
+}

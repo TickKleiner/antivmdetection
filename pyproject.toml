@@ -1,0 +1,20 @@
+[project]
+name = "antivmdetection"
+version = "0.0.0"
+description = "VirtualBox anti-VM detection helper (refactor in progress)"
+authors = [{ name = "Mikael" }]
+requires-python = ">=3.8"
+dependencies = [
+    "py-dmidecode==0.0.2",
+    "netifaces>=0.10",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+antivmdetection = "antivmdetection.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

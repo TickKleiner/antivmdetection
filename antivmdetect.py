@@ -7,6 +7,7 @@
 # Import stuff
 import subprocess
 import netifaces
+import os
 import os.path
 import dmidecode
 import random
@@ -15,6 +16,13 @@ import re
 import time
 import base64
 import sys
+
+seed_from_env = os.environ.get('ANTIVMDETECTION_SEED')
+if seed_from_env:
+    try:
+        random.seed(int(seed_from_env))
+    except ValueError:
+        random.seed(seed_from_env)
 
 # Welcome
 print('--- Generate VirtualBox templates to help thwart VM detection and more .. - Mikael, @nsmfoo ---')

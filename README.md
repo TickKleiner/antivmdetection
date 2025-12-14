@@ -1,61 +1,74 @@
 # Antivmdetection
 
-## Background
+## Overview
 
-A script to help you create templates, which you can use with VirtualBox to make VM detection harder.
+Generate host- and guest-side templates for VirtualBox to make simple VM detection heuristics harder. The refactor is in progress: the new CLI wraps the legacy Linux script so behavior is unchanged while collectors and generators are extracted.
 
-My first post on the subject was in 2012 and have after that been updated at random times. The blog format might have not been the best way of publishing the information and some people did make nice and "easy to apply" script based on the content.
+## Project status
 
-As a way to make it easier for me to add new content, I have decided to do the very same.
+* Linux live mode is fully refactored (`python -m antivmdetection` invokes the new collectors/generators).
+* Snapshot mode works: collect on Linux and replay on any OS (including Windows) without needing VirtualBox tooling installed.
 
-The purpose of this script is to use available settings without modifying the VirtualBox base. There are people who do really neat things by patching Virtualbox. But that is out of the scoop for this script. I think this approach has some merits as it does not (hopefully) break with every new release of VirtualBox.
-Overtime I have also included "things" that are not directly VM related, but rather things that malware is using to fingerprint installations with, I hope you don't mind..
+## Compatibility
 
-The main script will create the following files:
+| Platform | Live mode | Snapshot mode |
+| --- | --- | --- |
+| Linux | Supported (new collectors/generators) | Supported (`--collect-snapshot`) |
+| Windows | Not supported | Supported for generation only (`--from-snapshot` created on Linux) |
 
-* One shell script, that can be used as a template, to be used from the host OS and applied to the VM that you like to modify.
-* A dump of the DSDT, that is used in the template script above.
-* A Windows Powershell file to be used inside the guest, to handle the settings that is not possible to change from the host. This script will have to be run twice, one for the changes that requires reboot and the second time for the pesky things that resurface at reboot.
+## Running on Linux (live mode)
 
-## Usage
+* System packages: `sudo apt install python3-pip libcdio-utils acpica-tools mesa-utils smartmontools`
+* Python deps: `python3 -m pip install -r requirements.txt` (or `python3 -m pip install -e .`)
+* Windows binaries in repo root: `wget https://download.sysinternals.com/files/VolumeId.zip https://www.nirsoft.net/utils/devmanview-x64.zip`
+* Prepare inputs: `hostname > computer.lst`, `whoami > user.lst` (fill with multiple names for variety).
+* Run as root (the legacy script touches VirtualBox and hardware): `sudo python -m antivmdetection --output-dir ./artifacts --seed 1337`
+* Outputs: a host shell script, a guest PowerShell script, and a DSDT dump. The CLI still relies on the legacy behavior, so existing workflows continue to function.
 
-## Generate script from host
+## Snapshot workflow
 
-* Install dependencies `sudo apt install python3-pip libcdio-utils acpica-tools mesa-utils smartmontools`
-* Install Python modules: `sudo pip3 install -r requirements.txt`
-* Download the following Windows binaries and extract them in the antivmdetection directory : `wget https://download.sysinternals.com/files/VolumeId.zip  https://www.nirsoft.net/utils/devmanview-x64.zip` (x64 version).
-* Create computer and user text files : `hostname > computer.lst`, `whoami > user.lst` . Modify if you want to use different machine names and users for the VMs (recommended is to fill the files with a long list of user and computer names)
-* Run python script as sudo `sudo python3 antivmdetect.py`
-* Make generated host script executable from current user `sudo chmod a+x xxxxx.sh`
-* If you do get the following message: "ACPI tables bigger than 64KB (VERR_TOO_MUCH_DATA)", this is due to a limitation in Virtualbox, for more context see this case: <https://github.com/nsmfoo/antivmdetection/issues/37> . Not verified to work, but <https://www.tonymacx86.com/dsdt-database> might a good resource...
+Collect on Linux, replay anywhere:
 
-## Setup VM
+* Collect: `sudo python -m antivmdetection --collect-snapshot /tmp/snapshot.json --seed 1337`
+* Generate from snapshot (Linux or Windows): `python -m antivmdetection --from-snapshot /tmp/snapshot.json --output-dir ./artifacts`
 
-* Create the VM but don't start it, also exit the VirtualBox GUI. The shell script needs to be run before installation!.
-* Verify that "I/O APIC" is enabled (System > Motherboard tab).
-* Verify that "Paravirtualization Interface" is set to "None" (System > Acceleration tab).
-* Change CPU count to 2 or more if possible.
-* Set VM IP (File > Host Network Manager > Configure Adapter Manually > IPV4 adress).
-* The script expects that the storage layout to look like the following: + IDE: Primary master (Disk) and Primary slave (CD-ROM) + * ATA: Port 0 (Disk) and Port 1 (CD-ROM)
-* Run script as current user (because VMs are located in current user home dir) : `/bin/bash xxxxx.sh my-virtual-machine-name`
-* Install the Windows Operating System (Supports W7 and W10)
+Snapshots include the DSDT blob and base64-encoded helper files (DevManView, Volumeid, computer.lst, user.lst) so generation works cross-platform without extra binaries. A small fixture lives at `tests/fixtures/sample_snapshot.json` for testing the snapshot helpers.
 
-## Run script from inside the VM
+## Windows usage
 
-* Move the batch script (xxxx.ps1) to the newly installed guest.
-* Run the batch script inside the guest. Remember that most of the settings that gets modified, are reverted after each reboot. So make it run at boot if needed.
-* As of version 0.1.4, some applied settings will require a reboot. So run the batch script once, the guest will be rebooted. Then run the script once again to finalize the setup.
-* Before you apply the batch script inside the guest, please disable UAC (reboot required) otherwise you will not be able to modify the registry with the script.
-* For Windows 10 users: run the PS script as an administrator (right-click on the cmd.exe -> run as admin, navigate to the PS script and execute)
-* If applied correctly, a Pafish run will result in this (no need to modify Virtualbox).
+Windows live collection is not available. Use snapshot mode:
 
-* Please note, that this script does other things that is not covered by Pafish (for example W10 artifacts)
+1. Collect a snapshot on a supported Linux machine: `sudo python -m antivmdetection --collect-snapshot ./snapshot.json`.
+2. Copy the snapshot to Windows and generate outputs: `python -m antivmdetection --from-snapshot snapshot.json --output-dir C:\path\to\artifacts`.
+
+Apply the guest PowerShell script inside your Windows VM. Host-side changes still have to be applied from the VirtualBox host.
+
+## CLI flags
+
+* `--seed <int>`: deterministic randomness for reproducible runs. Example: `python -m antivmdetection --seed 42 --dry-run`.
+* `--output-dir <path>`: where generated artifacts are written. Example: `python -m antivmdetection --output-dir ./artifacts`.
+* `--collect-snapshot <path>`: save hardware data (including DSDT and helper files) to JSON (Linux only). Example: `python -m antivmdetection --collect-snapshot /tmp/snapshot.json`.
+* `--from-snapshot <path>`: generate outputs from a saved snapshot (works cross-platform). Example: `python -m antivmdetection --from-snapshot /tmp/snapshot.json --output-dir ./artifacts`.
+* `--dry-run`: parse arguments and log actions without touching the system. Example: `python -m antivmdetection --dry-run --seed 99`.
+
+## Testing
+
+* Install test deps: `python3 -m pip install pytest`
+* Run tests: `pytest`
+* Snapshot helpers and RNG determinism are covered by tests using `tests/fixtures/sample_snapshot.json`.
+
+## Legacy VM setup notes
+
+* Create the VM but don't start it, also exit the VirtualBox GUI. The host script needs to be run before installation.
+* Verify that "I/O APIC" is enabled (System > Motherboard tab) and "Paravirtualization Interface" is set to "None" (System > Acceleration tab).
+* Change CPU count to 2 or more if possible, and set the VM IP (File > Host Network Manager > Configure Adapter Manually > IPv4 address).
+* The script expects the storage layout to look like the following: IDE primary master (Disk) and primary slave (CD-ROM), ATA Port 0 (Disk) and Port 1 (CD-ROM).
+* Run the generated host script as the user that owns the VMs: `/bin/bash xxxxx.sh my-virtual-machine-name`
+* Move the generated PowerShell script into the guest and run it (twice if prompted for reboot). On Windows 10, run as administrator with UAC disabled before the first run.
+* If you see "ACPI tables bigger than 64KB (VERR_TOO_MUCH_DATA)", this is a VirtualBox limitation; see <https://github.com/nsmfoo/antivmdetection/issues/37> for context.
+* When the script cannot find suitable values, lines are commented with `#` for manual review.
 
 ![alt text](vmdetect0.1.5.png "VMDetect 1.5.x")
-
-## Notes
-
-* When the antivmdetect script can't find any suitable values to use, it will comment these settings in the newly created script, with a "#". These needs manual review as they might have impact on what is displayed in the VM.
 
 ## Version History
 
