@@ -36,13 +36,15 @@ def generate_host_outputs(snapshot: HardwareSnapshot, output_dir: Path) -> Gener
 
 def _host_script_name(dmi: Dict[str, str], *, is_windows: bool = False) -> str:
     ext = ".ps1" if is_windows else ".sh"
+    suffix = "_host" if is_windows else ""
     name_of_file = dmi.get("DmiSystemProduct", "").replace(" ", "").replace("string:", "")
     if name_of_file:
         return (
             dmi.get("DmiSystemProduct", "").replace(" ", "").replace("/", "_").replace(",", "_").replace("string:", "")
+            + suffix
             + ext
         )
-    return f"{dmi.get('DmiChassisType', '')}_{dmi.get('DmiBoardProduct', '').replace('string:', '')}{ext}"
+    return f"{dmi.get('DmiChassisType', '')}_{dmi.get('DmiBoardProduct', '').replace('string:', '')}{suffix}{ext}"
 
 
 def _generate_unix_host_lines(snapshot: HardwareSnapshot, dsdt_name: Optional[str]) -> List[str]:
