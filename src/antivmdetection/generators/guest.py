@@ -108,23 +108,38 @@ def _safe(items: List[str], idx: int, default: str = "") -> str:
 
 
 def _dsdt_block(dsdt: List[str], manu: str) -> List[str]:
+    if not manu:
+        LOGGER.warning("Missing DSDT manufacturer in snapshot; skipping DSDT rewrite")
+        return []
+
     lines: List[str] = []
     lines.append(f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\VBOX__ -Destination HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu} -Recurse')
     lines.append('Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\VBOX__ -Recurse')
+
+    table_id = _safe(dsdt, 2).strip()
+    entry_id = _safe(dsdt, 3).strip()
+    if not table_id or not entry_id:
+        LOGGER.warning("Missing DSDT table identifiers; skipping table renames")
+        return lines
+
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\VBOXBIOS -Destination HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{_safe(dsdt,2)}___ -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\VBOXBIOS -Destination HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{table_id}___ -Recurse'
     )
     lines.append(f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\VBOXBIOS -Recurse')
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{_safe(dsdt,2)}___\\00000002 -Destination HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{_safe(dsdt,2)}___\\{_safe(dsdt,3)} -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{table_id}___\\00000002 -Destination HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{table_id}___\\{entry_id} -Recurse'
     )
-    lines.append(
-        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{_safe(dsdt,2)}___\\00000002 -Recurse'
-    )
+    lines.append(f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\DSDT\\{manu}\\{table_id}___\\00000002 -Recurse')
     return lines
 
 
 def _fadt_block(manu: str, facp: List[str]) -> List[str]:
+    table_id = _safe(facp, 2).strip()
+    entry_id = _safe(facp, 3).strip()
+    if not (manu and table_id and entry_id):
+        LOGGER.warning("Missing FADT identifiers; skipping FADT rename block")
+        return []
+
     lines: List[str] = []
     lines.append("if ($version -like '10.0*') {")
     lines.append('$oddity = "HKLM:\\HARDWARE\\ACPI\\FADT\\" + (Get-ChildItem "HKLM:\\HARDWARE\\ACPI\\FADT" -Name)')
@@ -133,31 +148,37 @@ def _fadt_block(manu: str, facp: List[str]) -> List[str]:
     lines.append('Invoke-Expression ("Remove-Item -Path " + $oddity + " -Recurse")')
     lines.append("}")
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\VBOXFACP -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___ -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\VBOXFACP -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___ -Recurse'
     )
     lines.append(f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\VBOXFACP -Recurse')
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___\\{_safe(facp,3)} -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___\\{entry_id} -Recurse'
     )
     lines.append(
-        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___\\00000001 -Recurse'
+        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___\\00000001 -Recurse'
     )
     lines.append("}else{")
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\VBOXFACP -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___ -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\VBOXFACP -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___ -Recurse'
     )
     lines.append(f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\VBOXFACP -Recurse')
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___\\{_safe(facp,3)} -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___\\{entry_id} -Recurse'
     )
     lines.append(
-        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{_safe(facp,2)}___\\00000001 -Recurse'
+        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\FADT\\{manu}\\{table_id}___\\00000001 -Recurse'
     )
     lines.append("}")
     return lines
 
 
 def _rsdt_block(manu: str, dsdt: List[str]) -> List[str]:
+    table_id = _safe(dsdt, 2).strip()
+    entry_id = _safe(dsdt, 3).strip()
+    if not (manu and table_id and entry_id):
+        LOGGER.warning("Missing RSDT identifiers; skipping RSDT rename block")
+        return []
+
     lines: List[str] = []
     lines.append("if ($version -like '10.0*') {")
     lines.append('$noproblem = "HKLM:\\HARDWARE\\ACPI\\RSDT\\" + (Get-ChildItem "HKLM:\\HARDWARE\\ACPI\\RSDT" -Name)')
@@ -168,32 +189,32 @@ def _rsdt_block(manu: str, dsdt: List[str]) -> List[str]:
     lines.append('$cinnamon = "HKLM:\\HARDWARE\\ACPI\\RSDT\\" + (Get-ChildItem "HKLM:\\HARDWARE\\ACPI\\RSDT" -Name)')
     lines.append('$the_mero = "HKLM:\\HARDWARE\\ACPI\\RSDT\\" + (Get-ChildItem "HKLM:\\HARDWARE\\ACPI\\RSDT" -Name) + "\\" + (Get-ChildItem $cinnamon -Name)')
     lines.append(
-        f'Invoke-Expression ("Copy-Item -Path " + $the_mero + " -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___ -Recurse")'
+        f'Invoke-Expression ("Copy-Item -Path " + $the_mero + " -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___ -Recurse")'
     )
     lines.append('Invoke-Expression ("Remove-Item -Path " + $the_mero + " -Recurse")')
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___\\{_safe(dsdt,3)} -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___\\{entry_id} -Recurse'
     )
     lines.append(
-        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___\\00000001 -Recurse'
+        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___\\00000001 -Recurse'
     )
     lines.append("}else{")
     lines.append(
-        f'$check_exist = (Test-Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___\\00000001)'
+        f'$check_exist = (Test-Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___\\00000001)'
     )
     lines.append("if ($check_exist) {")
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___\\{_safe(dsdt,3)} -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___\\{entry_id} -Recurse'
     )
     lines.append(
-        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}___\\00000001 -Recurse'
+        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}___\\00000001 -Recurse'
     )
     lines.append("}else{")
     lines.append(
-        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}\\{_safe(dsdt,3)} -Recurse'
+        f'Copy-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}\\00000001 -Destination HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}\\{entry_id} -Recurse'
     )
     lines.append(
-        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{_safe(dsdt,2)}\\00000001 -Recurse'
+        f'Remove-Item -Path HKLM:\\HARDWARE\\ACPI\\RSDT\\{manu}\\{table_id}\\00000001 -Recurse'
     )
     lines.append("}}")
     return lines
@@ -202,9 +223,12 @@ def _rsdt_block(manu: str, dsdt: List[str]) -> List[str]:
 def _ssdt_block(ssdt_ids: List[str]) -> List[str]:
     if not ssdt_ids:
         return []
-    s1 = _safe(ssdt_ids, 0)
-    s2 = _safe(ssdt_ids, 1)
-    s3 = _safe(ssdt_ids, 2)
+    s1 = _safe(ssdt_ids, 0).strip()
+    s2 = _safe(ssdt_ids, 1).strip()
+    s3 = _safe(ssdt_ids, 2).strip()
+    if not (s1 and s2 and s3):
+        LOGGER.warning("Missing SSDT identifiers; skipping SSDT rename block")
+        return []
     lines: List[str] = []
     lines.append("if ($version  -like '10.0*') {")
     lines.append('$check_exist = (Test-Path HKLM:\\HARDWARE\\ACPI\\SSDT)')

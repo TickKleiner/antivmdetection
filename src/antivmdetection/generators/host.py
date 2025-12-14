@@ -114,7 +114,7 @@ def _generate_windows_host_lines(snapshot: HardwareSnapshot, dsdt_name: Optional
             lines.append(f'# & $VBoxManage setextradata $VmName "VBoxInternal/Devices/pcbios/0/Config/{key}" "{value}"')
         else:
             lines.append(
-                f"& $VBoxManage setextradata $VmName \"VBoxInternal/Devices/pcbios/0/Config/{key}\" \"'{value}'\""
+                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/pcbios/0/Config/{key}" "{value}"'
             )
 
     lines.extend(_disk_block_ps(snapshot))
@@ -192,7 +192,7 @@ def _disk_block_ps(snapshot: HardwareSnapshot) -> List[str]:
             )
         else:
             disk_lines.append(
-                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/{prefix}/Config/PrimaryMaster/{key}" "\'{value}\'"'
+                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/{prefix}/Config/PrimaryMaster/{key}" "{value}"'
             )
 
     disk_lines.append("if (-not $controller) {")
@@ -202,15 +202,15 @@ def _disk_block_ps(snapshot: HardwareSnapshot) -> List[str]:
     disk_lines.append("} else {")
     if disk.serial_number:
         disk_lines.append(
-            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/SerialNumber" "\'{disk.serial_number}\'"'
+            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/SerialNumber" "{disk.serial_number}"'
         )
     if disk.firmware_revision:
         disk_lines.append(
-            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/FirmwareRevision" "\'{disk.firmware_revision}\'"'
+            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/FirmwareRevision" "{disk.firmware_revision}"'
         )
     if disk.model_number:
         disk_lines.append(
-            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/ModelNumber" "\'{disk.model_number}\'"'
+            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/ModelNumber" "{disk.model_number}"'
         )
     disk_lines.append("}")
     return disk_lines
@@ -284,7 +284,7 @@ def _cdrom_block_ps(snapshot: HardwareSnapshot) -> List[str]:
             )
         else:
             cd_lines.append(
-                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/{key}" "\'{value}\'"'
+                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/{key}" "{value}"'
             )
 
     cd_lines.append("} else {")
@@ -302,7 +302,7 @@ def _cdrom_block_ps(snapshot: HardwareSnapshot) -> List[str]:
             )
         else:
             cd_lines.append(
-                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port1/{key}" "\'{value}\'"'
+                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port1/{key}" "{value}"'
             )
     cd_lines.append("}")
     return cd_lines
