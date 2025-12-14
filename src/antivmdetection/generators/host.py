@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import platform
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -18,11 +19,33 @@ def generate_host_outputs(snapshot: HardwareSnapshot, output_dir: Path) -> Gener
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    file_name = _host_script_name(snapshot.dmi)
+    is_windows = platform.system().lower() == "windows"
+    file_name = _host_script_name(snapshot.dmi, is_windows=is_windows)
     host_path = output_dir / file_name
     dsdt_name = _dsdt_name(snapshot)
     dsdt_path = _write_dsdt(snapshot, output_dir, dsdt_name)
 
+    if is_windows:
+        lines = _generate_windows_host_lines(snapshot, dsdt_name)
+    else:
+        lines = _generate_unix_host_lines(snapshot, dsdt_name)
+
+    host_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return GenerationArtifacts(host_script=host_path, guest_script=None, dsdt_blob=dsdt_path)
+
+
+def _host_script_name(dmi: Dict[str, str], *, is_windows: bool = False) -> str:
+    ext = ".ps1" if is_windows else ".sh"
+    name_of_file = dmi.get("DmiSystemProduct", "").replace(" ", "").replace("string:", "")
+    if name_of_file:
+        return (
+            dmi.get("DmiSystemProduct", "").replace(" ", "").replace("/", "_").replace(",", "_").replace("string:", "")
+            + ext
+        )
+    return f"{dmi.get('DmiChassisType', '')}_{dmi.get('DmiBoardProduct', '').replace('string:', '')}{ext}"
+
+
+def _generate_unix_host_lines(snapshot: HardwareSnapshot, dsdt_name: Optional[str]) -> List[str]:
     lines: List[str] = []
     lines.append(f"#Script generated on: {time.strftime('%H:%M:%S')}")
     lines.append(
@@ -59,19 +82,56 @@ fi """
         lines.extend(_cpu_brand_block(snapshot.host.cpu_brand))
 
     lines.extend(_warning_block(snapshot.host.devman_arch if snapshot.host else None))
-
-    host_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return GenerationArtifacts(host_script=host_path, guest_script=None, dsdt_blob=dsdt_path)
+    return lines
 
 
-def _host_script_name(dmi: Dict[str, str]) -> str:
-    name_of_file = dmi.get("DmiSystemProduct", "").replace(" ", "").replace("string:", "")
-    if name_of_file:
-        return (
-            dmi.get("DmiSystemProduct", "").replace(" ", "").replace("/", "_").replace(",", "_").replace("string:", "")
-            + ".sh"
+def _generate_windows_host_lines(snapshot: HardwareSnapshot, dsdt_name: Optional[str]) -> List[str]:
+    lines: List[str] = []
+    lines.append(f"#Script generated on: {time.strftime('%H:%M:%S')}")
+    lines.append("param(")
+    lines.append("  [Parameter(Mandatory=$true)]")
+    lines.append("  [string]$VmName")
+    lines.append(")")
+    lines.append("")
+    lines.append('$VBoxManage = "VBoxManage"')
+    lines.append(
+        'if (-not (Get-Command $VBoxManage -ErrorAction SilentlyContinue)) { Write-Error "[*] VBoxManage not found on PATH"; exit 1 }'
+    )
+    lines.append('if ([string]::IsNullOrWhiteSpace($VmName)) {')
+    lines.append('  Write-Host "[*] Please add vm name!"')
+    lines.append('  Write-Host "[*] Available vms:"')
+    lines.append('  & $VBoxManage list vms | ForEach-Object { ($_ -split \'"\')[1] }')
+    lines.append("  exit 1")
+    lines.append("}")
+    lines.append("")
+
+    for key, value in sorted(snapshot.dmi.items()):
+        if value is None:
+            continue
+        if "** No value to retrieve **" in value:
+            lines.append(f'# & $VBoxManage setextradata $VmName "VBoxInternal/Devices/pcbios/0/Config/{key}" "{value}"')
+        else:
+            lines.append(
+                f"& $VBoxManage setextradata $VmName \"VBoxInternal/Devices/pcbios/0/Config/{key}\" \"'{value}'\""
+            )
+
+    lines.extend(_disk_block_ps(snapshot))
+    lines.extend(_cdrom_block_ps(snapshot))
+    lines.extend(_acpi_block_ps(snapshot))
+    if dsdt_name:
+        lines.append(f'if (-not (Test-Path "{dsdt_name}")) ' + '{ Write-Warning "[WARNING] Unable to find the DSDT file!"; }')
+        lines.append(
+            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/acpi/0/Config/CustomTable" "$($PWD.Path)\\{dsdt_name}"'
         )
-    return f"{dmi.get('DmiChassisType', '')}_{dmi.get('DmiBoardProduct', '').replace('string:', '')}.sh"
+
+    if snapshot.host and snapshot.host.mac_address:
+        lines.append(f'& $VBoxManage modifyvm $VmName --macaddress1 "{snapshot.host.mac_address}"')
+
+    if snapshot.host and snapshot.host.cpu_brand:
+        lines.extend(_cpu_brand_block_ps(snapshot.host.cpu_brand))
+
+    lines.extend(_warning_block_ps(snapshot.host.devman_arch if snapshot.host else None))
+    return lines
 
 
 def _disk_block(snapshot: HardwareSnapshot) -> List[str]:
@@ -111,6 +171,46 @@ def _disk_block(snapshot: HardwareSnapshot) -> List[str]:
             f"VBoxManage setextradata \"$1\" VBoxInternal/Devices/ahci/0/Config/Port0/ModelNumber\t'{disk.model_number}'"
         )
     disk_lines.append("fi")
+    return disk_lines
+
+
+def _disk_block_ps(snapshot: HardwareSnapshot) -> List[str]:
+    disk_lines: List[str] = []
+    disk_lines.append('$controller = & $VBoxManage showvminfo $VmName --machinereadable | Select-String "SATA"')
+    disk = snapshot.disk
+    if disk is None:
+        return disk_lines
+
+    def emit(prefix: str, key: str, value: Optional[str]) -> None:
+        if value is None:
+            return
+        if "** No value to retrieve **" in value:
+            disk_lines.append(
+                f'# & $VBoxManage setextradata $VmName "VBoxInternal/Devices/{prefix}/Config/PrimaryMaster/{key}" "{value}"'
+            )
+        else:
+            disk_lines.append(
+                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/{prefix}/Config/PrimaryMaster/{key}" "\'{value}\'"'
+            )
+
+    disk_lines.append("if (-not $controller) {")
+    emit("piix3ide/0", "SerialNumber", disk.serial_number)
+    emit("piix3ide/0", "FirmwareRevision", disk.firmware_revision)
+    emit("piix3ide/0", "ModelNumber", disk.model_number)
+    disk_lines.append("} else {")
+    if disk.serial_number:
+        disk_lines.append(
+            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/SerialNumber" "\'{disk.serial_number}\'"'
+        )
+    if disk.firmware_revision:
+        disk_lines.append(
+            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/FirmwareRevision" "\'{disk.firmware_revision}\'"'
+        )
+    if disk.model_number:
+        disk_lines.append(
+            f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port0/ModelNumber" "\'{disk.model_number}\'"'
+        )
+    disk_lines.append("}")
     return disk_lines
 
 
@@ -160,6 +260,52 @@ def _cdrom_block(snapshot: HardwareSnapshot) -> List[str]:
     return cd_lines
 
 
+def _cdrom_block_ps(snapshot: HardwareSnapshot) -> List[str]:
+    cd_lines: List[str] = []
+    cd = snapshot.cdrom
+    if cd is None or all(value is None for value in cd.__dict__.values()):
+        cd_lines.append("# No CD-ROM detected: ** No values to retrieve **")
+        return cd_lines
+
+    cd_lines.append("if (-not $controller) {")
+    for key, value in {
+        "ATAPISerialNumber": cd.atapi_serial,
+        "ATAPIRevision": cd.atapi_revision,
+        "ATAPIProductId": cd.atapi_product_id,
+        "ATAPIVendorId": cd.atapi_vendor_id,
+    }.items():
+        if value is None:
+            continue
+        if "** No value to retrieve **" in value:
+            cd_lines.append(
+                f'# & $VBoxManage setextradata $VmName "VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/{key}" "{value}"'
+            )
+        else:
+            cd_lines.append(
+                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/piix3ide/0/Config/PrimarySlave/{key}" "\'{value}\'"'
+            )
+
+    cd_lines.append("} else {")
+    for key, value in {
+        "ATAPISerialNumber": cd.atapi_serial,
+        "ATAPIRevision": cd.atapi_revision,
+        "ATAPIProductId": cd.atapi_product_id,
+        "ATAPIVendorId": cd.atapi_vendor_id,
+    }.items():
+        if value is None:
+            continue
+        if "** No value to retrieve **" in value:
+            cd_lines.append(
+                f'# & $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port1/{key}" "{value}"'
+            )
+        else:
+            cd_lines.append(
+                f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/ahci/0/Config/Port1/{key}" "\'{value}\'"'
+            )
+    cd_lines.append("}")
+    return cd_lines
+
+
 def _acpi_block(snapshot: HardwareSnapshot) -> List[str]:
     acpi_lines: List[str] = []
     acpi = snapshot.acpi
@@ -170,6 +316,19 @@ def _acpi_block(snapshot: HardwareSnapshot) -> List[str]:
         acpi_lines.append(f"VBoxManage setextradata \"$1\" VBoxInternal/Devices/acpi/0/Config/AcpiOemId\t'{dsdt[1]}'")
         acpi_lines.append(f"VBoxManage setextradata \"$1\" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId\t'{dsdt[4]}'")
         acpi_lines.append(f"VBoxManage setextradata \"$1\" VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev\t'{dsdt[5]}'")
+    return acpi_lines
+
+
+def _acpi_block_ps(snapshot: HardwareSnapshot) -> List[str]:
+    acpi_lines: List[str] = []
+    acpi = snapshot.acpi
+    if acpi is None:
+        return acpi_lines
+    dsdt = acpi.dsdt or []
+    if len(dsdt) > 5:
+        acpi_lines.append(f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/acpi/0/Config/AcpiOemId" "{dsdt[1]}"')
+        acpi_lines.append(f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorId" "{dsdt[4]}"')
+        acpi_lines.append(f'& $VBoxManage setextradata $VmName "VBoxInternal/Devices/acpi/0/Config/AcpiCreatorRev" "{dsdt[5]}"')
     return acpi_lines
 
 
@@ -186,6 +345,25 @@ def _cpu_brand_block(cpu_brand: str) -> List[str]:
                 if chunk:
                     rebrand = _chunk_to_hex(chunk)
                     lines.append(f"VBoxManage setextradata \"$1\" VBoxInternal/CPUM/HostCPUID/{e}/{r}  0x{rebrand}\t")
+                i = i + 4
+    return lines
+
+
+def _cpu_brand_block_ps(cpu_brand: str) -> List[str]:
+    lines: List[str] = []
+    eax_values = ("80000002", "80000003", "80000004")
+    registers = ("eax", "ebx", "ecx", "edx")
+    i = 4
+    while i <= 47:
+        for e in eax_values:
+            for r in registers:
+                k = i - 4
+                chunk = cpu_brand[k:i]
+                if chunk:
+                    rebrand = _chunk_to_hex(chunk)
+                    lines.append(
+                        f'& $VBoxManage setextradata $VmName "VBoxInternal/CPUM/HostCPUID/{e}/{r}" "0x{rebrand}"'
+                    )
                 i = i + 4
     return lines
 
@@ -223,6 +401,41 @@ def _warning_block(devman_arch: Optional[str]) -> List[str]:
         )
         lines.append(
             'if [ $devman_arc != $arc_devman ]; then echo "[WARNING] Please use the DevManView version that coresponds to the guest architecture: $devman_arc "; fi'
+        )
+    return lines
+
+
+def _warning_block_ps(devman_arch: Optional[str]) -> List[str]:
+    lines: List[str] = []
+    lines.append(
+        '$cpu_count = (& $VBoxManage showvminfo --machinereadable $VmName | Select-String "cpus=[0-9]*" | ForEach-Object { ($_ -split "=")[1] })[0]'
+    )
+    lines.append('if ([int]$cpu_count -lt 2) { Write-Warning "[WARNING] CPU count is less than 2. Consider adding more!"; }')
+    lines.append(
+        '$memory_size = (& $VBoxManage showvminfo --machinereadable $VmName | Select-String "memory=[0-9]*" | ForEach-Object { ($_ -split "=")[1] })[0]'
+    )
+    lines.append('if ([int]$memory_size -lt 2048) { Write-Warning "[WARNING] Memory size is 2GB or less. Consider adding more memory!"; }')
+    lines.append(
+        '$net_used = (& $VBoxManage showvminfo $VmName | Select-String "vboxnet[0-9]") | ForEach-Object { if ($_ -match "vboxnet\\d") { $Matches[0] } } | Select-Object -First 1'
+    )
+    lines.append(
+        'if ($net_used) { $hostint_ip = (& $VBoxManage list hostonlyifs | Select-String -Pattern $net_used -Context 0,3 | Select-String "IPAddress:" | Select-Object -First 1 | ForEach-Object { ($_ -split ":",2)[1].Trim() }); if ($hostint_ip -eq "192.168.56.1") { Write-Warning "[WARNING] You are using the default IP/IP-range. Consider changing the IP and the range used!"; } }'
+    )
+    lines.append(
+        '$virtualization_type = (& $VBoxManage showvminfo --machinereadable $VmName | Select-String "^paravirtprovider" | ForEach-Object { ($_ -split "=")[1].Trim(\'"\') })[0]'
+    )
+    lines.append("if ($virtualization_type -ne 'none') { Write-Warning \"[WARNING] Please switch paravirtualization interface to: None!\"; }")
+    lines.append(
+        '$audio = (& $VBoxManage showvminfo --machinereadable $VmName | Select-String "audio=" | Select-Object -First 1 | ForEach-Object { ($_ -split "=")[1].Trim(\'"\') })'
+    )
+    lines.append("if ($audio -eq 'none') { Write-Warning \"[WARNING] Please consider adding an audio device!\"; }")
+    if devman_arch:
+        lines.append(f'$arc_devman = "{devman_arch}"')
+        lines.append(
+            '$devman_arc = (& $VBoxManage showvminfo --machinereadable $VmName | Select-String "ostype" | ForEach-Object { ($_ -split "=")[1].Trim(\'"\') })[0] -replace "-bit",""'
+        )
+        lines.append(
+            'if ($devman_arc -ne $arc_devman) { Write-Warning "[WARNING] Please use the DevManView version that coresponds to the guest architecture: $devman_arc"; }'
         )
     return lines
 
