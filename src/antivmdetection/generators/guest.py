@@ -37,6 +37,7 @@ def generate_guest_outputs(snapshot: HardwareSnapshot, output_dir: Path) -> Gene
     version = "$version = (Get-WmiObject win32_operatingsystem).version"
     lines: List[str] = [version]
     lines.extend(_windows_admin_block())
+    lines.extend(_script_location_block())
 
     lines.extend(_dsdt_block(dsdt, manu_prefill))
     lines.extend(_fadt_block(manu, facp))
@@ -53,6 +54,7 @@ def generate_guest_outputs(snapshot: HardwareSnapshot, output_dir: Path) -> Gene
     lines.append(_system_bios_date_line(dmi))
 
     if snapshot.guest:
+        lines.extend(_ensure_registry_path("HKCU:\\SOFTWARE\\Microsoft\\Internet Explorer\\SQM"))
         lines.append(
             f'New-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" -Name InstallDate -Value "{snapshot.guest.install_date_hex}" -PropertyType "DWord" -force'
         )
@@ -118,6 +120,14 @@ def _windows_admin_block() -> List[str]:
     ]
 
 
+def _script_location_block() -> List[str]:
+    return [
+        "if ($PSCommandPath) {",
+        "  try { Set-Location -LiteralPath (Split-Path -Parent $PSCommandPath) } catch { }",
+        "}",
+    ]
+
+
 def _manu_prefix(dsdt: List[str], double_underscore: bool) -> str:
     manufacturer = _safe(dsdt, 1)
     if double_underscore and ("DELL" in manufacturer or "INTEL" in manufacturer):
@@ -132,6 +142,10 @@ def _safe(items: List[str], idx: int, default: str = "") -> str:
         return items[idx]
     except Exception:
         return default
+
+
+def _ensure_registry_path(path: str) -> List[str]:
+    return [f'if (-not (Test-Path "{path}")) {{ New-Item -Path "{path}" -Force | Out-Null }}']
 
 
 def _dsdt_block(dsdt: List[str], manu: str) -> List[str]:
@@ -290,27 +304,52 @@ def _system_bios_date_line(dmi: Dict[str, str]) -> str:
 
 
 def _video_block(dac_type: Optional[str], chip_type: Optional[str]) -> List[str]:
+    if not (dac_type or chip_type):
+        return []
+
     lines: List[str] = []
+    lines.append("$videoKeys = @()")
+    lines.append(
+        "$videoKeys += Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video\\*\\0000' -ErrorAction SilentlyContinue"
+    )
+    lines.append(
+        "$videoKeys += Get-ChildItem 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\*\\0016' -ErrorAction SilentlyContinue"
+    )
+
     if dac_type:
-        lines.append('$DacType = ((Get-ItemProperty -path \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video\\*\\0000\')."HardwareInformation.DacType")')
-        lines.append("if ($DacType -eq 'Oracle Corporation') {")
-        lines.append(f'New-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video\\*\\0000 -Name HardwareInformation.DacType -Value "{dac_type}" -PropertyType "String" -force }}')
-        lines.append('$DacType = ((Get-ItemProperty -path \'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\*\\0016\')."HardwareInformation.DacType")')
-        lines.append("if ($DacType -eq 'Oracle Corporation') {")
-        lines.append(f'New-ItemProperty -Path HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\*\\0016 -Name HardwareInformation.DacType -Value "{dac_type}" -PropertyType "String" -force }}')
+        lines.append("foreach ($key in $videoKeys) {")
+        lines.append("  try {")
+        lines.append(
+            "    $current = (Get-ItemProperty -Path $key.PSPath -ErrorAction Stop).'HardwareInformation.DacType'"
+        )
+        lines.append("    if ($current -eq 'Oracle Corporation') {")
+        lines.append(
+            f"      Set-ItemProperty -Path $key.PSPath -Name 'HardwareInformation.DacType' -Value \"{dac_type}\" -PropertyType String -Force -ErrorAction SilentlyContinue"
+        )
+        lines.append("    }")
+        lines.append("  } catch { continue }")
+        lines.append("}")
     if chip_type:
-        lines.append('$ChipType = ((Get-ItemProperty -path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video\\*\\0000)."HardwareInformation.ChipType")')
-        lines.append("if ($ChipType -eq 'VirtualBox VESA BIOS') {")
-        lines.append(f'New-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video\\*\\0000 -Name HardwareInformation.ChipType -Value "{chip_type}" -PropertyType "String" -force }}')
-        lines.append('$ChipType = ((Get-ItemProperty -path HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\*\\0016)."HardwareInformation.ChipType")')
-        lines.append("if ($ChipType -eq 'VirtualBox VESA BIOS') {")
-        lines.append(f'New-ItemProperty -Path HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\*\\0016 -Name HardwareInformation.ChipType -Value "{chip_type}" -PropertyType "String" -force }}')
-        lines.append('$BiosString = ((Get-ItemProperty -path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video\\*\\0000)."HardwareInformation.BiosString")')
-        lines.append("if ($BiosString -eq 'Oracle VM VirtualBox VBE Adapte') {")
-        lines.append(f'New-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video\\*\\0000 -Name HardwareInformation.BiosString -Value "{chip_type}" -PropertyType "String" -force }}')
-        lines.append('$BiosString = ((Get-ItemProperty -path HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\*\\0016)."HardwareInformation.BiosString")')
-        lines.append("if ($BiosString -eq 'Oracle VM VirtualBox VBE Adapte') {")
-        lines.append(f'New-ItemProperty -Path HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\*\\0016 -Name HardwareInformation.BiosString -Value "{chip_type}" -PropertyType "String" -force }}')
+        lines.append("foreach ($key in $videoKeys) {")
+        lines.append("  try {")
+        lines.append(
+            "    $chip = (Get-ItemProperty -Path $key.PSPath -ErrorAction Stop).'HardwareInformation.ChipType'"
+        )
+        lines.append("    if ($chip -eq 'VirtualBox VESA BIOS') {")
+        lines.append(
+            f"      Set-ItemProperty -Path $key.PSPath -Name 'HardwareInformation.ChipType' -Value \"{chip_type}\" -PropertyType String -Force -ErrorAction SilentlyContinue"
+        )
+        lines.append("    }")
+        lines.append(
+            "    $biosString = (Get-ItemProperty -Path $key.PSPath -ErrorAction Stop).'HardwareInformation.BiosString'"
+        )
+        lines.append("    if ($biosString -eq 'Oracle VM VirtualBox VBE Adapte') {")
+        lines.append(
+            f"      Set-ItemProperty -Path $key.PSPath -Name 'HardwareInformation.BiosString' -Value \"{chip_type}\" -PropertyType String -Force -ErrorAction SilentlyContinue"
+        )
+        lines.append("    }")
+        lines.append("  } catch { continue }")
+        lines.append("}")
     return lines
 
 
